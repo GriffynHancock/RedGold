@@ -1,0 +1,16 @@
+{
+  "name": "redgold",
+  "owner": {
+    "name": "Griffyn Hancock",
+    "email": "griffyn.hancock@gmail.com"
+  },
+  "description": "RedGold — authorized security auditing for startup products.",
+  "plugins": [
+    {
+      "name": "rg",
+      "source": "./",
+      "description": "Authorized web and API security auditing with a machine-enforced scope boundary.",
+      "version": "0.1.0"
+    }
+  ]
+}

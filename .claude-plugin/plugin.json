@@ -1,0 +1,16 @@
+{
+  "name": "rg",
+  "displayName": "RedGold",
+  "version": "0.1.0",
+  "description": "Authorized web and API security auditing. Scaffolds an engagement with a machine-enforced scope boundary, runs a staged audit through a capped agent roster, and produces verified findings with resolvable evidence.",
+  "author": {
+    "name": "Griffyn Hancock",
+    "email": "griffyn.hancock@gmail.com"
+  },
+  "keywords": [
+    "security",
+    "audit",
+    "authorized-testing",
+    "appsec"
+  ]
+}

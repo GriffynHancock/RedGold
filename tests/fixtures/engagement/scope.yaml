@@ -1,0 +1,27 @@
+# Synthetic engagement used only to exercise scope_guard.py.
+# Wide authorization window on purpose: these tests run as a subprocess against the real clock,
+# so a narrow window would make them fail by calendar rather than by logic.
+engagement_id: guard-test
+client:
+  name: Synthetic Client
+  contact: nobody@example.invalid
+authorization:
+  document: ../authorization/synthetic.pdf
+  signed_by: Synthetic Signatory
+  signed_date: 2020-01-01
+  window_start: 2020-01-01
+  window_end: 2099-12-31
+mode: audit
+ceiling: 2
+crown_jewels:
+  - "synthetic test data"
+in_scope:
+  - {asset_type: WILDCARD, pattern: "*.example.invalid"}
+  - {asset_type: SUPABASE_PROJECT, pattern: "anonprojectref00"}
+out_of_scope:
+  - {asset_type: URL, pattern: "https://marketing.example.invalid", note: "third-party hosted"}
+constraints:
+  no_destructive: true
+  max_requests_per_burst: 10
+notify:
+  before_active: true

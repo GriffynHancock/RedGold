@@ -1,0 +1,4 @@
+{"asset_id": "A-001", "asset_type": "URL", "identifier": "app.example.invalid", "status": "CONFIRMED", "attribution_confidence": "HIGH", "matched_boundary_entry": "WILDCARD:*.example.invalid"}
+{"asset_id": "A-002", "asset_type": "URL", "identifier": "api.example.invalid", "status": "CONFIRMED", "attribution_confidence": "HIGH", "matched_boundary_entry": "WILDCARD:*.example.invalid"}
+{"asset_id": "A-003", "asset_type": "URL", "identifier": "marketing.example.invalid", "status": "CONFIRMED", "attribution_confidence": "HIGH", "matched_boundary_entry": "WILDCARD:*.example.invalid"}
+{"asset_id": "C-001", "asset_type": "URL", "identifier": "staging.example.invalid", "status": "CANDIDATE", "attribution_confidence": "LOW", "matched_boundary_entry": "WILDCARD:*.example.invalid"}

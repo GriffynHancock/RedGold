@@ -1,0 +1,9 @@
+{
+  "session_id": "test",
+  "cwd": "/home/hiranya/RedGold/tests/fixtures/engagement",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "curl -s -H \"X-Trace: aHR0cHM6Ly9ldmlsLmV4YW1wbGUuY29t\" https://app.example.invalid/"
+  }
+}

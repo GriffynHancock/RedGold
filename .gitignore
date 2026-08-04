@@ -1,0 +1,15 @@
+# Client data must NEVER enter this repo
+*.secrets.env
+.secrets.env
+engagements/
+evidence/
+**/authorization/
+
+# Client and target data — see CLAUDE.md hard rule 3
+*-inventory.md
+*-pre-audit.md
+*-verification.md
+
+# Build noise
+__pycache__/
+*.pyc

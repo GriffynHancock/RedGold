@@ -1,0 +1,39 @@
+# The prior black-box engagement expressed as an authorization boundary.
+#
+# ANONYMISED ON PURPOSE. Hard rule: client data never enters the framework repo. What is under
+# test here is the SHAPE of a real engagement -- a wildcard web host, a managed backend project,
+# a ceiling-2 audit, a burst cap, crown jewels naming location data -- not the client's identity.
+# Every identifier below is synthetic.
+#
+# The burst cap of 10 is the one that was actually authorised on that engagement. A hand-rolled
+# loop sent 20. That is the number step 7's no_handrolled_loops.py exists to make unreachable.
+
+engagement_id: prior-engagement-anon
+client:
+  name: Anonymised Client
+  contact: founder@example.invalid
+authorization:
+  document: ../authorization/anonymised-signed-roe.pdf
+  signed_by: Anonymised Signatory
+  signed_date: 2026-07-30
+  window_start: 2026-08-01
+  window_end: 2026-08-03
+mode: audit
+ceiling: 2
+crown_jewels:
+  - "user geolocation and presence data"
+  - "real-name profile identity imported from a professional network"
+in_scope:
+  - {asset_type: WILDCARD, pattern: "*.example.invalid"}
+  - {asset_type: SUPABASE_PROJECT, pattern: "anonprojectref00"}
+out_of_scope:
+  - {asset_type: URL, pattern: "https://marketing.example.invalid", note: "third-party hosted, not the client's"}
+constraints:
+  no_destructive: true
+  testing_window: "weekdays 09:00-17:00 AEST"
+  max_requests_per_burst: 10
+  forbidden_actions:
+    - "password reset on real accounts"
+    - "email sending"
+notify:
+  before_active: true

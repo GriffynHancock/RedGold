@@ -1,0 +1,9 @@
+{
+  "session_id": "test",
+  "cwd": "/home/hiranya/RedGold/tests/fixtures/engagement",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://evil.example.com/"
+  }
+}
