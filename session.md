@@ -375,6 +375,53 @@ control was my own care, and my own care is not a control.* That is exactly what
 
 ---
 
+## Session 003 — 2026-08-04 — `/rg:gate` built; a cold-start audit of the operator workflow
+
+**Did:** Built Gate 1 (`scripts/gate_cli.py plan`/`show`/`approve`) and Gate 2's resolution path
+(`blockers`/`resolve`), wired `canary_check.py`'s pre-approval road to it, rewrote `commands/gate.md`
+to document the real invocations. 16 new tests (`tests/test_gate_cli.py`), all green.
+
+Then ran a cold-start audit: follow the framework's own docs from nothing to a report, as a first
+operator would, and record where they lie. Four things it found:
+
+1. **`README.md` had no operator workflow at all** — no numbered path from install to report, and
+   it still called `/rg:gate` "not built" after this session built it. Fixed: added a "Running an
+   engagement" section and a demo prompt.
+2. **`scripts/README.md` was stale and actively wrong** — eight built, wired, tested scripts were
+   still listed "not built," contradicting `status.md` and `commands/new.md`. Followed it down a
+   dead end before checking the scripts directly. Fixed with `regen_scripts_readme.py`, generated
+   from disk and `HOOK_WIRING`, `--check` wired into a test so this cannot drift back.
+3. **`.gitignore`'s `*-verification.md` shadowed a real spec file**
+   (`docs/specs/redgold/08-findings-and-verification.md`), invisible to grep even though it was
+   tracked — this is how a client name once survived into a commit undetected, caught only by a
+   git-history check, not a working-tree search. Anchored with negations scoped to
+   `docs/specs/**`.
+4. **`scope_cli.py` refused a URL-typed candidate against a matching URL-typed scope entry** —
+   `promote http://127.0.0.1:8901` against an in-scope entry of exactly that URL was denied as
+   "outside the authorization boundary," which wrongly suggests amending scope. Root cause: the
+   identifier was stored and matched as the raw URL string, but `entry_matches_host()` calls
+   `normalise_host()`, which does not parse URLs. A bare-host WILDCARD candidate worked throughout,
+   which is what made this easy to miss. Fixed by normalising a URL identifier to (host, port) at
+   `add-candidate` time, and making the boundary check port-aware
+   (`entry_matches_target`) so a candidate on the right host but the wrong port still refuses —
+   this must never become a second way to widen scope. 5 new tests in `tests/test_scope_cli.py`.
+
+**Duration, corrected.** An earlier note attributed to this audit put it at "~30–40 minutes" for a
+full engagement. That figure was an **agent's own self-reported session time** — how long the
+agent's turn took to run — not operator wall-clock. The operator's actual measurement was **8
+minutes**. A self-reported duration from an agent is not a wall-clock measurement: it reflects
+model latency and turn structure, not the thing the number was supposed to describe, and should
+never have been recorded as if it were.
+
+**The finding that matters more than the timing.** The real cost of stale or missing documentation
+is not tidiness — it is **repeated failed attempts**: four wrong guesses at an undocumented schema,
+two failed promotions, and a dead-end README, all before anything useful happened. Every one of
+those is tokens and money spent, and every future cold start pays the same tax again until the docs
+are fixed. That is the case for treating `scripts/README.md`'s drift, this gitignore leak, and the
+promotion bug as real defects rather than polish.
+
+---
+
 ## HANDOFF
 
 **Read `status.md` first. It is authoritative for authorisation state and overrides anything below.**
@@ -413,3 +460,46 @@ RedGold rather than a folder of markdown.
 - Build Subsystem F or G — specced deliberately, every figure `[VERIFY]`
 - Quote a benchmark number not already verified in `14-calibration.md`
 - Claim `scope_guard.py` guarantees anything (§9.3.1, §9.9)
+
+---
+
+## Session 004 — 2026-08-04 — v1 build closes out; handoff to opensesh
+
+**Did:** Built Gate 1 (`gate_cli.py plan`/`show`/`approve`), which cleared the last tier-2 blocker —
+work no longer proceeds without a recorded, approved plan. That, plus `/rg:scope` and `/rg:report`
+from the previous session, completes §17.2 steps 1–9: v1 is built. Suite is at 406 tests (18
+skipped), 21/21 fault injection, both exit 0.
+
+**Five doc/bug fixes**, surfaced by the cold-start audit of the operator workflow: (1) `README.md`
+had no numbered operator workflow and still called `/rg:gate` "not built" after it was built; (2)
+`scripts/README.md` was stale and actively wrong about eight already-built scripts, now regenerated
+from disk by `regen_scripts_readme.py` with `--check` wired into a test so it cannot drift back
+again; (3) `.gitignore`'s `*-verification.md` pattern shadowed a real, tracked spec file
+(`docs/specs/redgold/08-findings-and-verification.md`) — invisible to a working-tree grep, the same
+class of blind spot that once let a client name survive undetected into a commit; (4) `scope_cli.py`
+refused a URL-typed promotion candidate against a matching URL-typed scope entry because the
+identifier was matched as a raw string instead of being normalised to (host, port); (5) that same
+fix made the boundary check itself port-aware, so a candidate on the right host but the wrong port
+now correctly refuses instead of silently passing.
+
+**Scanner research completed** (`docs/research/scanner-integration.md`): should the nine-check
+baseline be hand-rolled, wrapped, or composed from open-source scanners? Conclusion — **compose,
+don't choose.** Keep all nine current checks (cheap, fast, already schema-correct), add nuclei
+scoped to `http/exposures/*` and CORS-misconfiguration templates pinned to a recorded release tag,
+add `testssl.sh` for the TLS-posture gap that exists today. Do not add ZAP, nikto, or trivy to the
+baseline. One target per invocation, so `scope_guard.py` needs no change. Deliberately deferred,
+not built — the profile format should be designed against a real engagement, not a hypothesis.
+
+**Four adversarial audit rounds now stand behind v1**, each with a different hostile framing
+(`playbooks/_generic/adversarial-framings.md`): scope_guard oversold as a boundary; Gate 2 as prose
+with no enforcing code; the independent "controls don't work" / "docs overstate the code" pass (11
+defects, including unverified findings reaching a client report); and the self-denial pass ("these
+controls fight each other") that found the framework's own sanctioned burst path, its own
+`scope_cli.py` docs example, and `/rg:new` itself being denied by the hardening from the prior
+round. 21 real defects total, all fixed, all regression-tested.
+
+**Handoff.** `status.md` rewritten for the operator's stated next target, **opensesh** — approval
+claimed in-session, but no authorisation record exists on disk. `status.md`'s Immediate objective
+and its single open blocker (B-1) both say the same thing: prohibited until the scope facts are
+recorded and `/rg:new` has run. Read `status.md` first; it is authoritative and overrides the
+now-stale HANDOFF block below.

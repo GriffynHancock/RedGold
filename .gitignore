@@ -6,9 +6,21 @@ evidence/
 **/authorization/
 
 # Client and target data — see CLAUDE.md hard rule 3
+#
+# These three globs exist to catch a stray per-engagement artifact (recon inventory, pre-audit
+# notes, a verification writeup) if one is ever created inside this repo by mistake — engagements
+# live in ~/engagements/, never here. Unanchored, `*-verification.md` also matched
+# docs/specs/redgold/08-findings-and-verification.md — a real spec file, not client data — and
+# because the shell's grep respects .gitignore, that file went invisible to working-tree searches.
+# That is how a client name once survived into a commit undetected, caught only by a git-history
+# check. The negations below keep the catch-all broad everywhere else while explicitly exempting
+# the spec directory. Do not "simplify" this back to the three bare globs.
 *-inventory.md
 *-pre-audit.md
 *-verification.md
+!docs/specs/**/*-inventory.md
+!docs/specs/**/*-pre-audit.md
+!docs/specs/**/*-verification.md
 
 # Build noise
 __pycache__/

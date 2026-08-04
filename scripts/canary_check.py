@@ -34,6 +34,34 @@ What must never happen is a write proceeding on an agent's judgement that cleanu
 work. Both paths route through a decision recorded *before* the fact -- (a) through evidence,
 (b) through the plan.
 
+THE CANARY ROW SCHEMA (`ledger/cleanup.jsonl`)
+-----------------------------------------------
+`canary_proven()` below reads this file looking for a canary row that reached `state: deleted`.
+The required keys are `purpose`, `state`, `method`, `route_template`, `operation` -- match
+`{method, route_template, operation}` exactly against the write you are trying to authorise, or
+it will not be found. Extra keys (`created_ts`, `deleted_ts`, `canary_id`, `note`, ...) are
+welcome and ignored by this check, but the five required ones are load-bearing.
+
+`purpose` must be the literal string `"canary"` for a proving row (any other value, or its
+absence, means the row cannot authorise anything -- see `writes_already_made()`, which counts
+every *non*-canary row against a plan's `max_writes` budget).
+
+`state` must reach `"deleted"`. `"pending"` (write made, delete not yet attempted or not yet
+confirmed) and `"orphaned"` (delete attempted and failed -- what `cleanup_gate.py` blocks session
+end on) do **not** unblock further writes to that operation. Only a row that has actually reached
+`deleted` counts as proof the delete path works.
+
+Copy-pasteable example -- append this as one line to `ledger/cleanup.jsonl`:
+
+```json
+{"purpose": "canary", "state": "deleted", "method": "POST", "route_template": "/rest/v1/email_subscription", "operation": "POST /rest/v1/email_subscription", "canary_id": "rg-canary-8f21", "created_ts": "2026-08-06T09:31:00Z", "deleted_ts": "2026-08-06T09:32:00Z"}
+```
+
+Note `operation` for a plain REST route is conventionally `"{METHOD} {route_template}"`, matching
+what `resolve_operation()` below produces automatically for non-GraphQL routes. For a GraphQL
+endpoint, `operation` is the mutation name (e.g. `"deleteAccount"`), never the shared `/graphql`
+route alone.
+
 OPERATION IDENTITY
 ------------------
 A canary is keyed by `{method, route_template, operation}`, never by literal URL. `route_template`

@@ -31,6 +31,7 @@ import datetime as _dt
 import ipaddress
 import json
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -136,14 +137,48 @@ def reject_ip_valued_signal(signal_class: str, value: str) -> None:
     )
 
 
+def normalise_identifier(raw: str) -> tuple[str, int | None]:
+    """Reduce a candidate identifier to (bare host, port-or-None) -- one consistent form.
+
+    A URL-shaped identifier (``http://127.0.0.1:8901``) was previously stored and matched
+    verbatim. `entry_matches_host()` calls `normalise_host()` on whatever it is given, and
+    `normalise_host()` does not parse URLs -- it just lowercases and strips a trailing dot. So a
+    URL identifier compared against a URL-typed scope entry never matched: the whole scheme and
+    path rode along as part of the "host", while a bare-host WILDCARD candidate worked fine. The
+    register must hold the same shape regardless of how the operator typed the identifier, or
+    `in_boundary()` silently refuses things that are actually in scope -- which reads as "outside
+    the authorization boundary" and wrongly suggests amending scope when the real bug is a
+    formatting mismatch.
+
+    The port is kept, not discarded, and returned separately so callers can check it against a
+    scope entry that names one explicitly (`entry_matches_target`) -- collapsing it into the host
+    string would let a candidate on an authorised host but an unauthorised port promote silently,
+    which is exactly the kind of scope-widening promotion must never do.
+    """
+    raw = raw.strip()
+    if "://" in raw:
+        parsed = urllib.parse.urlsplit(raw)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            raise ScopeCliError(f"{raw!r} looks like a URL but no host could be parsed from it")
+        return host, parsed.port
+    return raw.lower().rstrip("."), None
+
+
 def load_boundary(root: Path) -> scope_mod.Scope:
     return scope_mod.load(root / "scope.yaml")
 
 
-def in_boundary(boundary: scope_mod.Scope, identifier: str) -> bool:
-    if any(scope_guard.entry_matches_host(e, identifier) for e in boundary.out_of_scope):
+def in_boundary(boundary: scope_mod.Scope, identifier: str, port: int | None = None) -> bool:
+    if any(scope_guard.entry_matches_target(e, identifier, port) for e in boundary.out_of_scope):
         return False
-    return any(scope_guard.entry_matches_host(e, identifier) for e in boundary.in_scope)
+    return any(scope_guard.entry_matches_target(e, identifier, port) for e in boundary.in_scope)
+
+
+def matched_entry(boundary: scope_mod.Scope, identifier: str, port: int | None = None) -> str | None:
+    return next(
+        (f"{e.asset_type}:{e.pattern}" for e in boundary.in_scope
+         if scope_guard.entry_matches_target(e, identifier, port)), None)
 
 
 # --------------------------------------------------------------------------------------------
@@ -185,7 +220,7 @@ def cmd_add_candidate(root: Path, args) -> int:
     candidates = read_jsonl(root / "assets" / "candidates.jsonl")
     register = read_jsonl(root / "assets" / "register.jsonl")
 
-    identifier = args.identifier.lower().rstrip(".")
+    identifier, port = normalise_identifier(args.identifier)
     if any(r.get("identifier") == identifier for r in candidates + register):
         raise ScopeCliError(f"{identifier} is already in the register or candidate queue")
 
@@ -203,12 +238,11 @@ def cmd_add_candidate(root: Path, args) -> int:
         "asset_id": args.asset_id or f"C-{len(candidates) + 1:03d}",
         "asset_type": args.asset_type,
         "identifier": identifier,
+        "port": port,
         "discovery_method": args.discovery_method,
         "attribution_signals": signals,
         "attribution_confidence": args.confidence,
-        "matched_boundary_entry": next(
-            (f"{e.asset_type}:{e.pattern}" for e in boundary.in_scope
-             if scope_guard.entry_matches_host(e, identifier)), None),
+        "matched_boundary_entry": matched_entry(boundary, identifier, port),
         "status": "CANDIDATE",
         "first_seen": now(),
         "last_seen": now(),
@@ -233,7 +267,7 @@ def cmd_promote(root: Path, args) -> int:
     boundary = load_boundary(root)
     candidates = read_jsonl(root / "assets" / "candidates.jsonl")
     register = read_jsonl(root / "assets" / "register.jsonl")
-    identifier = args.identifier.lower().rstrip(".")
+    identifier, typed_port = normalise_identifier(args.identifier)
 
     match = next((r for r in candidates if r.get("identifier") == identifier), None)
     if match is None:
@@ -242,7 +276,12 @@ def cmd_promote(root: Path, args) -> int:
             "an asset cannot be promoted straight into the register."
         )
 
-    if not in_boundary(boundary, identifier):
+    # Prefer the port recorded when the candidate was added -- the operator may re-type
+    # `promote` with just the bare host, and that must not silently drop a port an in-scope
+    # entry named specifically.
+    port = match.get("port") if match.get("port") is not None else typed_port
+
+    if not in_boundary(boundary, identifier, port):
         raise ScopeCliError(
             f"{identifier} sits outside the authorization boundary (or matches an out_of_scope "
             "entry). Promotion does not widen scope. Amend the boundary in writing first: "
@@ -269,9 +308,7 @@ def cmd_promote(root: Path, args) -> int:
     match["attribution_confidence"] = "HIGH"
     match["asset_id"] = args.asset_id or f"A-{len(register) + 1:03d}"
     match["last_seen"] = now()
-    match["matched_boundary_entry"] = next(
-        (f"{e.asset_type}:{e.pattern}" for e in boundary.in_scope
-         if scope_guard.entry_matches_host(e, identifier)), None)
+    match["matched_boundary_entry"] = matched_entry(boundary, identifier, port)
 
     register.append(match)
     write_jsonl(root / "assets" / "register.jsonl", register)

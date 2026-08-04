@@ -32,6 +32,21 @@ out_of_scope:
 constraints: {no_destructive: true}
 """
 
+SCOPE_WITH_URL_ENTRY = """engagement_id: promo-url-test
+client: {name: C, contact: c@example.invalid}
+authorization:
+  document: ../a.pdf
+  signed_by: S
+  signed_date: 2020-01-01
+  window_start: 2020-01-01
+  window_end: 2099-12-31
+mode: audit
+ceiling: 2
+in_scope:
+  - {asset_type: URL, pattern: "http://127.0.0.1:8901"}
+constraints: {no_destructive: true}
+"""
+
 
 class Harness(unittest.TestCase):
     def setUp(self):
@@ -53,6 +68,72 @@ class Harness(unittest.TestCase):
 
     def candidates(self) -> list[dict]:
         return scope_cli.read_jsonl(self.root / "assets" / "candidates.jsonl")
+
+
+class URLHarness(Harness):
+    """A boundary whose only in-scope entry is a URL naming a specific host and port --
+    the repro case for the URL-identifier promotion bug."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.root / "scope.yaml").write_text(SCOPE_WITH_URL_ENTRY, encoding="utf-8")
+        (self.root / "assets").mkdir()
+        (self.root / "ledger").mkdir()
+
+    def add_and_promote(self, identifier: str) -> tuple[int, str, str]:
+        self.run_cli("add-candidate", identifier,
+                     "--signal", "TLS_SAN:localtest.example@manual",
+                     "--signal", "CONTENT_FP:matches-build-hash@manual")
+        return self.run_cli("promote", identifier, "--confirm")
+
+
+class TestURLTypedCandidatePromotion(URLHarness):
+    def test_url_identifier_matching_a_url_scope_entry_promotes(self):
+        code, out, err = self.add_and_promote("http://127.0.0.1:8901")
+        self.assertEqual(code, 0, err)
+        self.assertIn("CONFIRMED", out)
+        register = self.register()
+        self.assertEqual(len(register), 1)
+        # The register holds one consistent form -- a bare host, not the raw URL string.
+        self.assertEqual(register[0]["identifier"], "127.0.0.1")
+        self.assertEqual(register[0]["port"], 8901)
+
+    def test_url_identifier_on_a_host_outside_the_boundary_is_refused(self):
+        code, _, err = self.add_and_promote("http://10.0.0.5:8901")
+        self.assertEqual(code, 1)
+        self.assertIn("outside the authorization boundary", err)
+        self.assertEqual(self.register(), [])
+
+    def test_url_identifier_on_an_authorised_host_but_unauthorised_port_is_refused(self):
+        # Same host as the scope entry, different port. Must not promote -- an entry that names
+        # a specific port authorises exactly that port, not the whole host on any port.
+        code, _, err = self.add_and_promote("http://127.0.0.1:9999")
+        self.assertEqual(code, 1)
+        self.assertIn("outside the authorization boundary", err)
+        self.assertEqual(self.register(), [])
+
+class TestBareHostPromotionIsUnchanged(Harness):
+    """The URL-normalisation fix must not touch the already-working bare-host path."""
+
+    def test_bare_host_promotes_as_before(self):
+        self.run_cli("add-candidate", "api.acme.example",
+                     "--signal", "TLS_SAN:api.acme.example@crt.sh",
+                     "--signal", "CONTENT_FP:bundle-hash@httpx")
+        code, out, err = self.run_cli("promote", "api.acme.example", "--confirm")
+        self.assertEqual(code, 0, err)
+        self.assertIn("CONFIRMED", out)
+        register = self.register()
+        self.assertEqual(register[0]["identifier"], "api.acme.example")
+        self.assertIsNone(register[0]["port"])
+
+    def test_bare_host_outside_boundary_is_still_refused(self):
+        self.run_cli("add-candidate", "api.other.example",
+                     "--signal", "TLS_SAN:x@crt.sh", "--signal", "CONTENT_FP:y@httpx")
+        code, _, err = self.run_cli("promote", "api.other.example", "--confirm")
+        self.assertEqual(code, 1)
+        self.assertIn("outside the authorization boundary", err)
 
 
 class TestPromotionRules(Harness):

@@ -127,6 +127,15 @@ if ! "$PYTHON" "$SCRIPT_DIR/scope_guard.py" --check-url "$url" --root "$root" --
   exit 3
 fi
 
+# The gate reference must actually be an approved, current authorisation -- not just any string.
+# gate_cli.py's check_gate() checks existence, approval, and that plan_hash/scope_hash still
+# match the files on disk (an amended scope or edited plan voids the approval, §9.7). Checked
+# last, immediately before anything is logged or fired, but still before either happens.
+if ! gate_error="$("$PYTHON" "$SCRIPT_DIR/gate_cli.py" --root "$root" validate --gate-ref "$gate_ref" 2>&1 >/dev/null)"; then
+  echo "$gate_error" >&2
+  exit 2
+fi
+
 timestamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 mkdir -p "$root/ledger"

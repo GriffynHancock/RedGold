@@ -8,6 +8,65 @@ produced them.
 
 This is unreleased commercial work belonging to the author. It is not a public tool.
 
+## Running an engagement
+
+The shortest honest path from nothing to a report. Every command below is a real invocation —
+run `/rg:<name>` inside Claude Code, or read the matching file in `commands/*.md` for the full
+flag set, refusals, and worked examples before typing anything.
+
+1. **Install.** From the framework repo root:
+
+   ```sh
+   /plugin marketplace add ~/RedGold
+   /plugin install rg@redgold
+   ```
+
+   For a one-session dev run without installing, launch Claude Code with
+   `claude --plugin-dir ~/RedGold` instead.
+
+2. **Scaffold the engagement.** `/rg:new` — gathers the authorization facts by asking (who
+   authorized it, what they can authorize, the signed document's path, the window, and for
+   `redteam` a named emergency contact) and writes `~/engagements/<client>-<yyyy-mm>/`. It
+   **refuses if the authorization document does not exist on disk** — have it saved before you
+   start.
+
+3. **Record and promote assets.** Inside the engagement directory:
+
+   ```sh
+   /rg:scope add-candidate <host> --discovery-method "..." --signal 'CLASS:value@source' --signal 'CLASS:value@source'
+   /rg:scope promote <host> --confirm
+   ```
+
+   Promotion needs **two independent attribution-signal classes** (or explicit
+   `CLIENT_CONFIRMED`) plus the operator's `--confirm`. It never widens scope — an asset outside
+   the boundary is refused, not promoted.
+
+4. **Gate before any tier-2 write.** `/rg:gate plan` writes the phase plan naming the assets,
+   test classes, and write endpoints with their budgets; `/rg:gate approve` records the
+   operator's sign-off. **This is required before any tier-2 write** — `canary_check.py` only
+   permits a write on a canary proven deleted or on this pre-approval, and skipping the gate is
+   why writes get denied, not a bug to work around.
+
+5. **Baseline, then test.** Run the fixed-checklist baseline against confirmed assets
+   (`scripts/baseline_scan.py --root .`), then run the staged audit through the agent roster,
+   recording findings as they're independently reproduced on disk.
+
+6. **Report.** `/rg:report` regenerates `status.md` from the ledgers and writes
+   `deliverables/report-tier<N>.md` from validated findings only — nothing from the conversation
+   that produced a claim.
+
+### Demo prompt
+
+Paste this into a session opened inside an engagement directory to pick up where the last one
+left off:
+
+```
+Read scope.yaml and status.md. List the CONFIRMED assets and run the P10 baseline
+(scripts/baseline_scan.py --root .) against them. For anything you find, record a finding with
+an evidence_ptr that resolves on disk — not prose — then run
+scripts/validate_findings.py --root . before telling me what you found.
+```
+
 ## The problem it solves
 
 An agentic auditor left to its own judgement will happily test something it was never authorised
@@ -75,8 +134,12 @@ Then the rest of the command set, run inside the engagement directory:
 
 - **`/rg:scope`** — show the authorization boundary, record a discovered candidate asset, promote
   one to testable, or amend the boundary in writing.
-- **`/rg:gate`** — present a phase plan for approval or resolve a recorded scope-deviation
-  blocker. **Not built** — see below.
+- **`/rg:gate`** — write and approve the phase plan (Gate 1), or list and resolve a recorded
+  scope-deviation blocker (Gate 2). Gate 1 (`plan`, `show`, `approve`, `blockers`, `resolve`) is
+  built and backs `canary_check.py`'s pre-approval path — see `commands/gate.md`. The part that
+  is **not built** is the automatic detection that raises a Gate 2 blocker in the first place
+  (§9.3.2 plan-deviation checking in `scope_guard.py`); `blockers`/`resolve` work on whatever a
+  blocker-writer records, and nothing currently writes one automatically.
 - **`/rg:harvest`** — at engagement close, promote redacted lessons into this repo's playbook
   library. **Not built** — see below.
 - **`/rg:report`** — generate the client deliverable from validated findings on disk.
@@ -105,9 +168,11 @@ unless noted:
 
 Copied faithfully from `status.md` — do not describe any of these as working:
 
-1. **Gate 2 / plan deviation (§9.3.2)** — `scope_guard.py` enforces *scope*, not *the plan*. A
-   confirmed, in-scope, under-ceiling asset the plan does not name sails through. Gate 2 is
-   currently a rule, not a control.
+1. **Gate 2 detection / plan deviation (§9.3.2)** — Gate 1 (`plan`, `approve`) and Gate 2's
+   resolution path (`blockers`, `resolve`) are built (`scripts/gate_cli.py`). What is missing is
+   the automatic check: `scope_guard.py` enforces *scope*, not *the plan*, so a confirmed,
+   in-scope, under-ceiling asset the plan does not name sails through without ever raising a
+   blocker to resolve.
 2. **`cleanup_gate.py`** — nothing stops an engagement closing with outstanding cleanup debt.
 3. **`session_start.py`** — no context reload across compaction.
 4. **Most §5.5 attribution-probe constraints** — rate limiting, `purpose: attribution` logging,
