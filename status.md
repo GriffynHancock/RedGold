@@ -73,6 +73,17 @@ The next engagement is **opensesh**, and it is **NOT YET AUTHORISED IN THE FRAME
    is deliberately deferred so the profile format is designed against a real engagement rather than
    a hypothesis.
 
+## Deferred research — ordered by what actually moves the boundary
+
+1. **Off-host egress containment** (§9.10). The only real boundary, and it does not exist. Until it
+   does, the honest claim stays "refused by tooling and logged", never "cannot happen".
+2. **Typed tool interface instead of shell parsing** —
+   `docs/research/structured-tool-interface.md`. Raised by outside review 2026-08-04. Shrinks the
+   heuristic layer and makes the "MCP has no canonical target field" denial obsolete for a server
+   we define ourselves. **Does not replace the boundary**, and is not a boundary while `Bash`
+   remains available. Build it after (1), or it makes the framework sound safer than it is.
+3. **Scanner composition** — `docs/research/scanner-integration.md`.
+
 ## Test discrimination — the count is not the claim
 
 **`/usr/bin/python3 scripts/verify_controls.py`** breaks each control deliberately and asserts the
