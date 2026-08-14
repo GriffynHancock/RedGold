@@ -6,8 +6,6 @@ boundary, runs a staged audit through a capped agent roster, and produces a clie
 only from findings that were independently re-executed on disk — not from the conversation that
 produced them.
 
-This is unreleased commercial work belonging to the author. It is not a public tool.
-
 ## Running an engagement
 
 The shortest honest path from nothing to a report. Every command below is a real invocation —
