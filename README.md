@@ -107,6 +107,33 @@ Every engagement directory runs on a three-file contract:
   hand-edited.
 - **`session.md`** — the handoff: what changed, what's next, what not to repeat.
 
+## Why containment is a network problem
+
+This is the architecture RedGold is built toward, not a capability it has today — see "What is
+NOT enforced" below for exactly what's missing right now.
+
+An LLM is a text generator; it does not execute anything itself. Every command that runs, runs
+because conventional software around the model parsed a string it emitted and handed it to an
+interpreter. That has an architectural consequence for how you contain an agentic security tool:
+
+1. **The harness isn't a place to add enforcement.** Claude Code is a closed, fast-moving binary.
+   Forking it to bolt on enforcement means owning that fork's maintenance forever.
+2. **The container isn't either.** RedGold's tools are scanners — raw sockets, packet crafting,
+   kernel-dependent syscalls. A sandbox locked down enough to be a real boundary breaks the tools;
+   one loose enough to run them isn't a boundary.
+3. **So the boundary has to be the network.** Even if an agent fully compromised its own VM —
+   found a 0-day, got root, rewrote every hook and deleted every script — it should still only be
+   able to send packets to destinations a filter on a different machine permits.
+
+The same logic extends to trust: an agent should be treated as a potential insider threat, not
+because the model is assumed malicious, but because prompt injection from a target under test and
+an agent going off the rails on its own produce identical behaviour from the outside.
+
+**Where this stands today:** the off-host filtering machine in point 3 does not exist yet. The
+honest claim right now is narrower: out-of-scope targets are refused by tooling on the same host
+and logged, not that they cannot be reached. `scope_guard.py` is defence-in-depth, not the network
+boundary described above.
+
 ## Install and run
 
 Validate the plugin manifest:
