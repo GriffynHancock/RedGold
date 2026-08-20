@@ -390,3 +390,409 @@ limit and evidence discard · `merge_review.py` + `review.jsonl` · `VERIFIED_BY
 coverage assertions, §8.5 scope-bounded negatives, §8.4 `chain_scan.py` · RG-1 §5's static
 `grants` table and the `low` scanner ceiling · the `8 of 11` deny-list · RG-3's `profiles/` tree ·
 RG-4's `rg4_ingest.py` and `rg-scoping` · Subsystem F in its entirety.
+
+---
+
+## 6. The mechanical walk
+
+**The invariant:** *a control must read only fields that are already written when it runs, and
+must not read a field that something between production and the check overwrites.*
+
+Six violations were already known on 2026-08-20 and are recorded elsewhere. Walking §4's map
+against §5's "reads" column found **nineteen**, of which **thirteen are new**. Each is stated as
+*what it reads → why it cannot work → what it costs.*
+
+Ordered by consequence, not by discovery.
+
+### D-1 — `REPORT_STALE` fires on 100% of any engagement with an agent-written finding
+
+*Reads:* `created`, on **every** record in `findings/*.json`.
+*Why it fails:* `report.freshness_violation` refuses outright when any record's `created` cannot
+be parsed — *"An unreadable timestamp is not evidence that the report is current."* That fail-closed
+direction is correct. But **`created` has no producer except `baseline_scan.py`**, and no agent
+card mentions the field (§2.1c). So the first freehand finding an agent writes without a `created`
+stamp makes `report.py --check` and `/rg:close` refuse permanently, with a message that does not
+say which record is at fault.
+*Cost:* the disabled-gate failure in its purest form. `gate_cli.close_violations` returns *every*
+reason at once precisely so an operator does not learn to distrust the gate — and this defect
+guarantees they will, on the first real engagement. It is also the exact inverse of RG-1 §4.8's
+test: **name a healthy engagement state at which this fires.** Every one of them.
+*Status:* **new.**
+
+### D-2 — phase discrimination in `COVERAGE_EMPTY_PHASE` is inert
+
+*Reads:* `phase` on findings records and on `coverage.jsonl` rows, via `gate_cli.in_phase`.
+*Why it fails:* **nothing anywhere writes `phase` onto a finding.** `grep` finds the key only in
+`gate_cli`'s own `activity.jsonl` row and in tests. `in_phase` deliberately treats an untagged
+record as counting toward whichever phase is being closed — a reasonable degradation rule in
+isolation — so with *no* producer, **every phase is satisfied by any finding anywhere in the
+engagement.**
+*Cost:* `complete --phase recon` with real findings, then `complete --phase webtest`,
+`--phase codeaudit`, `--phase verify` with zero work each, all pass. `PHASE_NEVER_COMPLETED` at
+close requires only *one* `phase.complete` row. So the mechanism RG-1 §8.2 calls *"the single most
+important thing in this section"* — the thing that would have stopped ENGAGEMENT-B existing
+quietly — degrades to a single engagement-wide check that one baseline scan satisfies.
+*Status:* **new.**
+
+### D-3 — `not_attempted` is understood by one reader of three
+
+*Reads:* `result` on a findings record.
+*Why it fails:* `gate_cli.NOT_A_FINDING_RESULTS` was corrected on 2026-08-20 to
+`{"not_applicable", "not_attempted"}` (adversarial review S4). **The correction was not carried to
+the other two readers.** `regen_status.render` uses `non_findings = {"absent", "not_applicable"}`;
+`report.classify` buckets only `absent` and `not_applicable`.
+*Cost:* a record meaning *"we did not look"* is counted as a finding in `status.md` — the file
+CLAUDE.md calls authoritative and the operator reads at every session start — and in
+`report.classify` it falls through to the ordinary path, where it can be validated, severity-capped
+and **printed to the client as a finding or an open question.** This is defect S8's exact shape
+(two readers, opposite rules, one corpus) recurring in a third place, one round after S8 was fixed
+by consolidating two readers.
+*Status:* **new.**
+
+### D-4 — the `coverage.jsonl` half of `phase_evidence` has no producer
+
+*Reads:* `coverage.jsonl` rows with `outcome: absent`.
+*Why it fails:* RG-1 §8.1 specifies the coverage register; §9.3 lists it as Release 3; nothing
+writes it. `gate_cli.phase_evidence` reads it anyway (correctly — the reader before the writer is
+a deliberate pattern here).
+*Cost:* bounded and honest today, because the `findings/*.json` half does fire. Recorded because
+it means `COVERAGE_EMPTY_PHASE` is satisfied only by a findings record, so *"record what was
+checked — … or an `absent` row in `coverage.jsonl`"* names a remedy the operator cannot perform.
+A refusal message that offers an impossible fix is how a gate loses credibility.
+*Status:* **new** (as a composition observation; the unbuilt register is known).
+
+### D-5 — `ENVIRONMENT_DISCREPANCY` fires on 0% at `SubagentStop`
+
+*Reads:* `env_signals` **and** `environment_at_test == "production"`.
+*Why it fails:* `environment_at_test` is written by `findings.apply_environment_cap`. On the
+report path `report.classify` calls the cap over the whole corpus first, so the field exists. **On
+the `SubagentStop` path it never runs** — `validate_findings.run` → `validate_file` →
+`validate_record`, with no cap anywhere. The field is absent, the string comparison against
+`"production"` fails, and the check is silent.
+*Cost:* the check is live only at report assembly, which is the last possible moment — after the
+agent that could have re-examined the asset has stopped. RG-1 §4.2 states the check runs at *"finding
+creation … and report assembly"*; the finding-creation half works for `baseline_scan` (which calls
+the cap itself) and is dead for every agent-written record.
+*Status:* **new.** This is the same defect class as the known `ENVIRONMENT_DISCREPANCY`-at-Gate-1
+error, one lifecycle point later, and it survived the fix for it.
+
+### D-6 — the `code_defect` default never applies at `SubagentStop` either
+
+*Reads:* `discovered_by == "rg-codeaudit"`.
+*Why it fails:* same mechanism as D-5 — the default is stamped inside `apply_environment_cap`.
+`rg-codeaudit` writes a finding, the hook validates it, and at that moment the record has no
+`production_nexus`. It acquires one only if and when `report.classify` runs.
+*Cost:* bounded, because the report path is the one that matters for the cap. But
+`CODE_DEFECT_CLEARED_WITHOUT_REASON` — the ceremony that stops a four-character
+`"production_nexus": null` taking a critical to a medium — reads `"production_nexus" in record`,
+so at the hook it also cannot distinguish "cleared" from "never set". The S6 fix is one path short.
+*Status:* **new.**
+
+### D-7 — `DERIVATION_MISMATCH` has two forms and each is dead on one of the two paths
+
+*Reads:* form (a) `severity != severity_derivation.after_env_cap`; form (b)
+`severity_derivation.derivation_conflict`.
+*Why it fails:* form (a) cannot fire in `report.classify`, and the code says so in a comment —
+the cap runs first, so the comparison is equal by construction. Form (b) was added for exactly
+that reason. But form (b)'s input is stamped **by the cap**, so on the `SubagentStop` path — where
+the cap never runs — **form (b) cannot fire either**. Each path is covered by one form and blind
+to the other.
+*Cost:* a hand-edited `severity` **below** a record's own recorded `after_env_cap` — the
+flattering direction, which is the whole point of the control — is caught at report assembly and
+not at the hook. Partial coverage presented as full.
+*Status:* **new.** The S1 fix is correct as far as it goes; this is its untested other half.
+
+### D-8 — `no_nesting.py` guards 4 of the 12 tools it knows about
+
+*Reads:* the PreToolUse matcher, before the script is ever invoked.
+*Why it fails:* `NESTING_TOOLS` is `{Agent, Task, TaskOutput, TaskCreate, TaskUpdate, TaskList,
+TaskGet, TaskStop, SendMessage, AskUserQuestion, ExitPlanMode, EnterPlanMode}`. The matcher
+`new_engagement.py` writes is `Agent|Task|TaskOutput|AskUserQuestion`. Per the harness's documented
+matcher rules, a pattern of letters/digits/`_`/`-`/spaces/`,`/`|` is an **exact alternation
+match**, not a prefix `[SOURCE: docs/wiki/claude-code/hooks.md §5]` — so `TaskCreate`,
+`TaskUpdate`, `TaskList`, `TaskGet`, `TaskStop`, `SendMessage`, `ExitPlanMode` and `EnterPlanMode`
+never invoke the hook.
+*Cost:* `SendMessage` is called out in the script's own comment as *"a real tool in this harness"*
+that a hardcoded list had previously missed. The list was fixed; the wiring was not. Eight of
+twelve nesting paths are unguarded, and the failure mode the control exists for — *"a pipeline
+that reports success while doing nothing"* — is silent.
+*Status:* **new.**
+
+### D-9 — `redact.py` may be entirely inert `[VERIFY]`
+
+*Reads:* `payload["tool_response"]`; emits
+`hookSpecificOutput.updatedToolOutput`.
+*Two independent problems.* First, `new_engagement.settings_json` attaches a `matcher` **only when
+`event == "PreToolUse"`**, so `redact.py`'s declared `Bash|WebFetch|Read|mcp__.*` matcher is
+discarded and it runs on every tool call. That is over-firing, which is survivable.
+Second, and seriously: **`updatedToolOutput` does not appear in the documented hook JSON output
+schema.** The schema this repo recorded from primary sources lists `hookSpecificOutput.updatedInput`
+and nothing for modifying tool *output* `[SOURCE: docs/wiki/claude-code/hooks.md §3]`.
+`tests/test_redact.py` asserts that the *script emits the field*; nothing asserts the *harness
+honours it*.
+*Cost:* if the field is not honoured, "Credential redaction" — listed in `status.md`'s **Built and
+enforced** table — removes nothing from the transcript, and the only thing that reaches the model
+is the `additionalContext` note saying credentials were removed. A control that reports having
+acted while doing nothing is worse than an absent one.
+*Status:* **new. `[VERIFY]` before anything is done about it** — a five-minute test settles it: run
+a session with the hook wired, return a fake `sk_test_` in tool output, and read the transcript
+file. Do not rewrite the script on the strength of this page.
+
+### D-10 — `UNVERIFIED_ABOVE_LOW` is structurally unreachable from the only mechanical producer
+
+*Reads:* `verified` ∈ {`replayed`, `executed`}.
+*Why it fails:* `baseline_scan.make_finding` writes `"verified": "executed"` on any check whose
+predicate returned true. The scanner attests its own independent verification.
+*Cost:* P2 — *"a finding is not a finding until something other than the model verified it"* — is
+satisfied by the producer's own claim. RG-1 §4.5 names this exactly (*"the rule is satisfied by the
+exact thing it exists to catch"*), prescribes the fix (`VERIFIED_BY_SELF` + stop writing
+`executed`), and marks it **E3, not landed**. It is recorded here because a reader of the control
+inventory would otherwise count `UNVERIFIED_ABOVE_LOW` as covering the baseline.
+*Status:* **known** (RG-1 §9.2 states E3 did not land), but not reflected in `status.md`.
+
+### D-11 — three baseline checks fire on `status == 200` and land in the client body
+
+*Reads:* `probe.status`.
+*Why it fails:* `_admin_reachable` is `return probe.status == 200`, used by `admin_open`
+(**critical**), `ghost_admin_open` (high) and `actuator_open` (high). Combined with D-10 the record
+is written `status: PROVEN`, `verified: executed`, `confidence: confirmed`, with a resolving
+evidence pointer — which passes **every** gate in `findings.validate_record` and every branch of
+`report.classify`, straight into **What we found**.
+*Cost:* against a single-page application that serves `200` for unknown paths — the modal
+deployment shape for this exact client segment (Vercel/Netlify SPA) — this fabricates a critical
+and two highs per asset. It is the Wavestone failure (*"fabricated a critical … with a
+proof-of-exploit that did not work"*) reproduced by the deterministic component that exists to
+prevent it. RG-1 §5.3 specifies the fix (`grant_evidence: status_only`, enforced by an assertion
+over `CHECKS` at import time); it is unbuilt.
+*Status:* **known as FM-2**, but its composition with D-10 — that the two together produce a
+client-facing critical with nothing in the pipeline able to stop it — is **new**.
+
+### D-12 — `scope_cli.py amend` silently destroys every key `scope.py` does not model
+
+*Reads/writes:* `cmd_amend` does `document = boundary.to_dict()`, mutates, re-parses, and writes
+`amended.dumps()` over `scope.yaml`.
+*Why it fails:* `Scope.to_dict()` emits exactly the modelled fields. Any other key — a comment, a
+future `parity` block (RG-2 §8.3), `authority`/`platforms` (RG-4 D-3), `environment_established`,
+`environment_source`, per-asset `environment` — is present in the parsed document and absent from
+the output.
+*Cost:* today it destroys operator comments. The moment any of the four specced blocks lands
+without a matching `to_dict()` entry, the first amendment deletes a client's signed attestation of
+dev/prod divergence, and `scope_hash` changes so the deletion looks like a legitimate amendment.
+`new_engagement.py`'s round-trip assertion has the same blind spot, and RG-1 §9.2's E1 row already
+flags it in passing (*"silently drops any field missing from `to_dict()`"*) without generalising it
+to `amend`.
+*Status:* **new** for `amend`.
+
+### D-13 — there is no finding-id allocator
+
+*Reads:* `id`, in `ID_RE`, in `validate_corpus`'s `by_id` map, and in `REFERENCE_ID_RE`.
+*Why it fails:* `baseline_scan.scan` numbers from `start_index=1` and `main()` never passes
+anything else. Agents writing `findings/webtest.json` have no allocator and no instruction.
+`regen_status.all_findings` concatenates every `findings/*.json`.
+*Cost:* three compounding failures on collision. `validate_corpus` builds `by_id` by
+last-write-wins, so one of two `F-001`s vanishes from corpus-level checks. `REFERENCE_ID_RE`
+scanning free text then matches the *other* record's id and raises a spurious `ROLLUP`, which
+`report.classify` uses to move a real finding into `rollup_constituents` — **dropping it from the
+client's document**. And a second baseline run over a changed register renumbers everything, so
+evidence filenames and `dominated_by`/rollup references silently re-point.
+*Status:* **new.**
+
+### D-14 — `gate_ref` is null in every activity row, so no action joins to an approval
+
+*Reads:* `activity.jsonl:gate_ref`.
+*Why it fails:* `scope_guard.build_activity_row` stamps `"gate_ref": None` and documents why —
+*"The hook payload carries no gate reference and the guard does not read `gates.jsonl`."* That is
+honest. The consequence is not recorded anywhere.
+*Cost:* Gate 1's `plan_hash`/`scope_hash` staleness rule is enforced in exactly two places —
+`rate_probe.sh` (which passes `--gate-ref`) and `gate_cli.close`. **Every other network action in
+the engagement is unattributable to any approval**, so `/rg:gate approve` is a record of intent
+rather than a gate on action, and RG-2 §5.5's reconciliation table cannot distinguish "approved
+traffic" from "traffic".
+*Status:* **new** as a stated consequence.
+
+### D-15 — `findings.py` gives a reason for a residual that the harness documentation contradicts
+
+*Reads:* the `SubagentStop` payload.
+*Why it matters:* `findings.py`'s `CODE_DEFECT_PRODUCERS` comment says the mechanical alternative —
+stamping `discovered_by` from the subagent type in the hook — *"is not available: the hook payload
+carries `agent_id` and `session_id`, neither of which names the agent type."* The wiki page
+recorded from primary sources the same day says the common stdin fields include **`agent_type`**,
+present on subagent-scoped events, of which `SubagentStop` is one
+`[SOURCE: docs/wiki/claude-code/hooks.md §2]`.
+*Cost:* if the wiki is right, S6's residual — *"the producer is a sentence in an agent card, not a
+mechanism"*, called out in `status.md` as one of two standing caveats — is closable with a few
+lines, and has been left open on a false premise. **`[VERIFY]`: the wiki page's own sourcing caveat
+applies, and this specific row is exactly the kind it says to re-fetch before relying on.** Two
+documents written the same day contradict each other on a load-bearing fact; neither has been
+checked against a running hook.
+*Status:* **new.**
+
+### D-16 — `crown_jewels` and `forbidden_actions` are validated and read by nothing
+
+*Reads:* nothing.
+*Why it matters:* both are parsed, type-checked, round-tripped and serialised. `crown_jewels` is
+Gate 0's headline output (*"Operator + Lead agree scope, crown jewels, ceiling"*) and is a `+1`
+modifier in RG-1 §4.7's scorer, which does not exist. `forbidden_actions` is a client's explicit
+"leave this alone" list with no enforcement path at all.
+*Cost:* a client-facing promise with no mechanism. This is CLAUDE.md design judgement 4 —
+*a control nobody is forced to run is not a control* — in the degenerate case where nobody can run
+it.
+*Status:* **new.**
+
+### D-17 — RG-1 §4.2's siting argument rests on an ordering nothing enforces
+
+*Reads:* the assumption that *"no contact happens until after Gate 1 has approved the plan
+(§9.7)"*.
+*Why it matters:* that sentence is the load-bearing justification for moving
+`ENVIRONMENT_DISCREPANCY` off Gate 1 — and it is the justification for `ENVIRONMENT_UNDECLARED`
+being sufficient at Gate 1. **Nothing enforces it.** `scope_guard.py` states it does not implement
+plan checking; `baseline_scan.py` never reads `gates.jsonl`; an agent may probe a CONFIRMED
+in-scope host at tier 1 with no plan and no approval in existence.
+*Cost:* the reasoning is still *correct* — a discrepancy check at Gate 1 would fire on 0% because
+signals need contact — but the argument is right for the wrong reason. The real reason is that
+signals are written by producers that run later, not that the lifecycle forbids earlier contact.
+More consequentially: `environment` can be declared, approved at Gate 1, then amended, and
+`scope_cli.amend` prints a warning while nothing re-checks it until `close`.
+*Status:* **new.**
+
+### D-18 — `finding_class: compliance` is routed through the exploit column of the environment cap
+
+*Reads:* `findings.cap_column(finding_class)` and `NO_EXPLOIT_CLASSES`.
+*Why it fails:* `compliance` is already a member of `FINDING_CLASSES`. `NO_EXPLOIT_CLASSES` is
+`{posture, governance}`. `cap_column` returns `"technical"` for anything outside that set, so a
+compliance finding is scored against the **exploit** column: capped at `high` on staging,
+`medium` on development, `low` on ephemeral-preview. **An obligation gap does not become less
+severe because it was observed on a dev box** — the cap's entire justification (*"a statement about
+where we looked"*) does not apply to a claim about a legal obligation.
+Second half: `validate_record` raises blocking `NA_NOT_PERMITTED` whenever `verified == "n/a"` and
+the class is outside `NO_EXPLOIT_CLASSES`. A compliance gap has no exploit to replay, so
+`verified: "n/a"` is its only honest value — and it is refused. **Every compliance finding is
+currently unrepresentable.**
+*Cost:* Subsystem F is specced, not built, so nothing is broken today. It is recorded here because
+the vocabulary shipped ahead of the machinery and a reader of `FINDING_CLASSES` would reasonably
+assume the class works.
+*Status:* **new.**
+
+### D-19 — `report.py` claims to strip `[VERIFY]` content and contains no such check
+
+*Reads:* nothing.
+*Why it fails:* `report.py`'s module docstring lists, among the things the report refuses to do:
+*"`[VERIFY]`-marked content never reaches a client."* `grep -n VERIFY scripts/report.py` matches
+only that sentence. `agents/rg-report.md` repeats the rule as an instruction. There is no filter in
+`render`, no filter in `classify`, and no validator code for it.
+*Cost:* hard rule 1 — *nothing marked `[VERIFY]` reaches a client or a marketing claim* — is
+enforced by an agent instruction and a docstring. RG-1 §11.2 additionally specifies a **literal
+deny-list** for the `8 of 11` scoreboard with its own injected fault; that is unbuilt too. Both are
+one-function controls guarding the repo's most consequential hard rule.
+*Status:* **new.**
+
+### 6.1 Two smaller items, recorded without a number
+
+- **`env_signals` are attached after the cap loop** in `baseline_scan.scan`, so
+  `apply_environment_cap` never sees them. Harmless today (the cap does not read them) and fragile
+  the moment it does.
+- **`scope_guard.load_register` folds the CONFIRMED set to bare hostnames**, discarding `port`,
+  while `scope_cli` treats `(host, port)` as asset identity. A CONFIRMED asset on one port
+  therefore satisfies the CONFIRMED test for every port on that host. Mitigated — not closed — by
+  the separate port-authorisation check against `in_scope`.
+
+### 6.2 What the walk says about the six already known
+
+Five of the six were fixed by moving a control or by adding a producer. **None of the fixes
+generalised**: `COVERAGE_EMPTY_PHASE` moved from `cmd_approve` to `cmd_complete` and nobody asked
+whether its *other* input (`phase`) had a producer — D-2. `ENVIRONMENT_DISCREPANCY` moved off Gate
+1 and nobody asked whether its input existed on the *other* path it now runs on — D-5.
+`DERIVATION_MISMATCH` gained a second form for the report path and nobody asked whether that form
+worked on the hook path — D-7. The `not_attempted` fix landed in one of three readers — D-3.
+
+**The pattern is that each fix was verified against the path that produced the bug report, and
+against no other path.** That is what a dataflow contract is for, and its absence is the finding
+underneath all seventeen.
+
+---
+
+## 7. Built / specced / neither
+
+Modelled on `status.md`'s "NOT enforced" section, which is the honesty standard in this repo.
+
+**Built and can fire:** everything in §5.1. 605 tests, 60/60 injected faults
+`[SOURCE: status.md, measured 2026-08-20]`. Read `status.md`'s own caveat with it: *a passing suite
+is not assurance*, and fault injection uses coarse mutations that a wrongly-sited control survives.
+**Every defect in §6 is invisible to all 60 faults**, because a mutation to a control that cannot
+fire changes no test outcome.
+
+**Built and inert:** §5.2 — eight controls, described in `status.md` or a spec as working. Two
+further controls (D-19) are described in a docstring and an agent card and were never written at
+all.
+
+**Specced, not built:** §5.3. The largest items by consequence:
+
+1. **Off-host egress filtering.** The only layer RedGold's own grading calls a **boundary**.
+2. **The RG-1 severity model** — `precondition`, `grants`, domination, the §4.7 scorer, the
+   reviewer merge. RG-1's index reads as a built system; §9.2 records that E3, E4 and E5 did not
+   land, and Release 3 has not started. `severity_derivation` in the code carries three keys; the
+   spec's example carries eleven, and the spec's own `DERIVATION_MISMATCH` is defined against
+   `after_review`, a key nothing writes.
+3. **The coverage register** (`coverage.jsonl`), which two shipped controls already read.
+4. **`rg-setup`, `rg-scoping`, `rg4_ingest.py`** — parts 0 and 2 of the four-part architecture.
+5. **RG-3's `profiles/` tree.** RedGold today has one scanner: a nine-check hand-written checklist.
+
+**Neither specced nor built — named because their absence is load-bearing:**
+
+- Anything that tells an agent the findings schema (§2.1c). Every RG-1 rule presumes it.
+- Any allocator for finding ids (D-13).
+- Any mechanism placing an agent on a different trust tier, which RG-2 §3.1 requires for
+  `rg-recon`.
+- Any consumer for `crown_jewels` or `forbidden_actions` (D-16).
+- Subsystem F: all content `[VERIFY]`, research outstanding.
+
+---
+
+## 8. Where the composition does not cohere
+
+Six structural incoherences, distinct from the field-level defects in §6.
+
+**8.1 The verification chain has no closing link.** P2 requires something other than the model to
+verify a finding. `rg-verify` re-executes; but it has no `Write` tool, no mandated output path, no
+schema, no parser, no `chrome-devtools`, and there is no field-level route from its verdict back
+to the record — `verified_by` has no producer and `merge_review.py` does not exist. Meanwhile the
+one mechanical producer self-certifies (D-10). **The whole `verified` axis is, today, written only
+by the party it constrains.**
+
+**8.2 RG-2's three-tier split and the plugin architecture are incompatible as written.** RG-2 §3.1
+promotes to a rule that `rg-recon` runs on the control tier, outside containment. `rg-recon` ships
+as a plugin subagent that runs in the same session, on the same machine, under the same hooks as
+`rg-webtest`. There is no expressible way to place a subagent on a different host, and RG-2 does
+not name one.
+
+**8.3 RG-1 assumes a lifecycle RG-1 does not enforce.** See D-17. Two of RG-1's control-siting
+decisions are justified by §9.7's ordering; §9.7 is prose.
+
+**8.4 RG-2 (containment) and RG-2 (rate control) are two documents under one name, and they
+disagree about what the boundary buys.** `rg2-containment.md` §10.1 item 3 states plainly that the
+firewall does nothing about harm at a permitted destination. `rg2-rate-control.md` §1 takes that as
+its premise and concludes the control belongs in a wrapper (`scan_run.py`) that does not exist.
+Neither is built, and the shared "RG-2" label invites a reader to think one covers the other.
+
+**8.5 RG-3's premise contradicts the state of RG-1.** RG-3 inherits RG-1's `low` scanner ceiling
+"unconditionally", and derives it from `VERIFIED_BY_SELF` — which is **unbuilt** (D-10). So the
+ceiling RG-3 treats as already enforced is enforced by nothing, and RG-3's §4 argument that a
+per-template `grants` table is unnecessary rests on it.
+
+**8.6 The three-file contract has a fourth file nobody generates.** `CLAUDE.md` / `status.md` /
+`session.md` is the stated contract, with `status.md` generated by `regen_status.py`. `session.md`
+is specified as append-only with a HANDOFF block *"injected by `session_start.py`"* — which does
+not exist, so `session.md` is hand-maintained, which is the exact property `regen_status.py` was
+built to eliminate for its sibling.
+
+### 8.7 One thing that composes better than it looks
+
+The **fail-closed direction rule** — *"'fail closed' names a direction, not a value, and the
+direction is always the one that does not reduce what the client is told"* (RG-1 §3.4) — is
+implemented consistently across five independent components written by different agents:
+`scope.effective_environment` → `production`, `findings.resolve_environment` → `production`,
+`report.needs_verification` on an unknown severity → `True`, `report.freshness_violation` on an
+unreadable timestamp → refuse, `regen_status.INAPPLICABLE_REASONS` allow-listing the *non-gap*
+side, `canary_check.NEVER_DISPATCHED_STATES` allow-listing the *exonerated* side. Each was
+arrived at separately and none of them points the wrong way. That is the strongest evidence in the
+repo that the principles are doing real work rather than decorating it.
