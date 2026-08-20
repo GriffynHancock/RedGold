@@ -49,8 +49,12 @@ evidence/
 
 # Root files that are deliberately curated, not merely tracked by habit.
 !CLAUDE.md
-!status.md
 !session.md
+
+# status.md is withheld. Its "NOT enforced" list names exact, current,
+# unfixed code-level gaps -- a usable map for anyone wanting to misuse the
+# framework during a live engagement. It stays the authoritative internal
+# record; it is not a public artifact.
 
 # Documentation: allow the spec and the briefing, withhold the rest.
 # NOTE: a parent-directory ignore cannot be selectively un-ignored, so these

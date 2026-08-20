@@ -8,13 +8,28 @@ produced them.
 
 ## Why this exists
 
-Startups and solo founders now ship production software written largely by AI agents. That code
-reaches real users — real logins, real payment rails, sometimes real location data — without ever
-passing a security reviewer, not because anyone is negligent but because no consultancy can audit
-that surface at founder speed or founder budget. RedGold is what I'm building to close that gap:
-an agentic auditor with the same speed advantage as the code it's checking, but with its authority
-to act kept narrower than its ability to reason, and that narrowing enforced by code rather than by
-asking it nicely.
+Two reasons, and the second is the one I actually find interesting.
+
+**There is about to be a lot of demand and not much supply.** The Australian government has agreed
+in principle to remove the small business exemption from the Privacy Act. No commencement date has
+been legislated yet — so this is a stated direction, not a deadline — but if it lands, a large
+population of businesses acquires obligations they have never had to meet, with no in-house
+capability to meet them. Meanwhile founders ship production software written largely by AI agents:
+real logins, real payment rails, sometimes real location data, reaching real users without ever
+passing a security reviewer. Not negligence — no consultancy audits that surface at founder speed
+or founder budget.
+
+**And I want to know where the bounds of LLM risk actually are.** An agentic pentester is a
+deliberately awkward case: you are handing a text generator offensive tooling and pointing it at
+someone else's system. So it is a good place to find out what can genuinely be controlled, what
+cannot be, and what that leaves LLMs useful for. The answers so far have been more specific than
+"be careful" — a hook cannot see a child process; a control can be perfectly written and still
+never fire; the only enforcement that survives a compromised agent is a filter on a machine the
+agent has no account on. Those are findings about the technique, not about this project.
+
+So this is as much an AI-safety experiment as a security tool, and it produces one either way. The
+design rule underneath it: keep the agent's authority to act narrower than its ability to reason,
+and enforce that narrowing in code rather than by asking nicely.
 
 ## State of the project
 
@@ -25,8 +40,10 @@ they hold against a live one. The single most consequential gap: off-host egress
 actual network boundary described below — does not exist yet. Until it does, the honest claim is
 **"out-of-scope targets are refused by tooling and logged,"** never **"cannot happen."**
 
-`status.md` is the current, corrected state, including a plain list of what does not work yet. It
-is not marketing copy and isn't written as one — read it before trusting any claim made here.
+The project keeps an internal record of exactly what is and is not enforced, and it is longer than
+this README. It is not published: it names specific unfixed gaps in a framework meant to be pointed
+at other people's systems, which is a map worth keeping to ourselves. Treat any capability claim
+here as needing that check.
 
 ## Why containment is a network problem
 
@@ -69,20 +86,19 @@ that level of detail belongs there, not here.
 ```
 
 The second script breaks each control deliberately to prove the tests would notice it failing —
-run it before trusting a green first one. Current counts, and what they do and don't prove, are in
-`status.md`; they're not repeated here because that copy is exactly what went stale last time.
+run it before trusting a green first one. Counts are deliberately not quoted here: a number copied
+into a README is a number that goes stale, which is exactly what happened to the last one.
 
 ## Audit history
 
 Eight adversarial review rounds are on record, most of them finding real defects the project's own
 tests missed — including two shipped past a green suite in the same day they were found.
-`playbooks/_generic/adversarial-framings.md` has the methodology; `status.md` has the full table.
+`playbooks/_generic/adversarial-framings.md` has the methodology.
 The standing lesson: a framework's tests are written by whoever wrote the code, and inherit its
 blind spots exactly.
 
 ## Where to look next
 
-- `status.md` — what's true right now, corrected as of the last session
-- `CLAUDE.md` — the rules this repo is built under
+- `CLAUDE.md` — the rules this repo is built under, and the design judgements behind them
 - `docs/REDGOLD-BRIEFING.md` — the whole design in one file
 - `session.md` — the current working log
