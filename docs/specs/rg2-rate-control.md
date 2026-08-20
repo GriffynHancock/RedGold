@@ -1,9 +1,19 @@
 ---
 title: RG-2 — request-volume control for tools that loop internally
 date: 2026-08-20
-status: draft
+status: draft — §2.0 row D, §2.4 and §5.1 partially superseded, see below
 question: What actually bounds the volume of traffic RedGold sends at a client, where does that bound live, and which parts of it are boundaries rather than hopes?
+superseded_in_part_by:
+  - docs/research/lab-topology-and-logging.md §3 (selective TLS interception; the amendment is §3.6)
+see_also:
+  - docs/specs/rg2-containment.md — a different document under the same "RG-2" label; §8.4 of docs/wiki/architecture/current.md records that the shared name invites a reader to think one covers the other
 ---
+
+> **Currency note, 2026-08-20.** This document's central §2 finding — *request-rate enforcement
+> outside the workload is unavailable by construction* — was **overturned the same day** by
+> `docs/research/lab-topology-and-logging.md` §3. The supersession is marked inline at each of the
+> three points where the claim is made (§2.0 row D, §2.4, §5 item 1) rather than only here. The
+> amendment is proposed and **not yet accepted**; nothing in §3 or §4 has been rewritten for it.
 
 # RG-2 — request-volume control
 
@@ -103,7 +113,14 @@ is the failure it exists to prevent.
 | A | `no_handrolled_loops.py` — shell-syntax hook | Improvised bursts written in bash: `for`, `while`, `xargs`, brace expansion, `curl [1-20]`, `-Z`, `-K`, backgrounding, >3 URLs on a line. This is the 20-vs-10 incident and it is genuinely stopped | Any binary that loops internally — nuclei, ffuf, nmap, ZAP, testssl. The fan-out is inside a process the hook cannot see | **Heuristic** |
 | B | Wrapper allowlist — tier-2 tools must go through `scan_run.py` | The ordinary case completely: one place owns the rate flags, the gate ref, the budget, the pre-flight log and the process timeout | Invoking the binary directly, which is caught only by the same string parser §9.3.1 already calls a heuristic (`n=nuclei; $n …`, a copied binary, `python3 -c`) | **Defence-in-depth (strong)** |
 | C | Per-tool native rate flags — `nuclei -rl`, `nmap --max-rate`, ZAP's rate limiter | The actual load, in practice. These are the only mechanism that determines what the tool really sends | Cooperative by construction: correct invocation is the whole guarantee. A flag that silently no-ops (§1.5's `-td` case) leaves a run that *looks* capped in the command line, the log and the report | **Defence-in-depth (cooperative)** |
-| D | The gateway — nftables/proxy on `rg-gw` | **Connection rate and byte volume to a destination**, enforced by a principal the workload cannot become | Nothing the workload can reach — *for what it measures*. But it cannot measure requests at all (§2.4) | **BOUNDARY**, for connections and bytes only |
+| D | The gateway — nftables/proxy on `rg-gw` | **Connection rate and byte volume to a destination**, enforced by a principal the workload cannot become | Nothing the workload can reach — *for what it measures*. ~~But it cannot measure requests at all (§2.4)~~ **[SUPERSEDED]** | ~~**BOUNDARY**, for connections and bytes only~~ **[SUPERSEDED]** |
+
+> **[SUPERSEDED 2026-08-20 — this row must be split in two.]**
+> `docs/research/lab-topology-and-logging.md` §3 establishes that TLS interception is a
+> **per-destination policy, not a global setting**, and that both candidate proxies implement it as
+> one. The row above must become two rows — *gateway, unbumped* and *gateway, bumped* — with the
+> bumped row graded **BOUNDARY for request rate** to in-scope target destinations. See §2.4 below and
+> §3.6 of that document for the full amendment, which has not yet been written into this spec.
 | E | Post-hoc ledger detection with halt | Nothing in flight. Makes an overrun undeniable, halts the session, and blocks engagement close | Latency — the requests are already sent. And a workload that has escaped forges its own ledger (`rg2-containment.md` §5.6) | **Detection** |
 
 **Read the D row carefully.** It is a boundary, and it is a boundary over the wrong variable. That
@@ -234,10 +251,43 @@ interception sees one `CONNECT host:443` and a byte count. It cannot count HTTP 
 tunnel. Squid's delay pools do not help either: they limit **bandwidth in bytes per second, not
 request rate** ([Squid — DelayPools](https://wiki.squid-cache.org/Features/DelayPools)).
 
-> **Request-rate enforcement outside the workload is unavailable by construction, unless the design
+> ~~**Request-rate enforcement outside the workload is unavailable by construction, unless the design
 > accepts TLS interception. It should not.** This is the load-bearing finding of §2. The gateway is a
 > boundary over connections, bytes and time — and those are useful — but the variable the fuzz budget
-> is written in cannot be enforced there at all.
+> is written in cannot be enforced there at all.~~
+
+> **[SUPERSEDED 2026-08-20 by `docs/research/lab-topology-and-logging.md` §3. The finding above is
+> false in its general form and must be replaced, not softened.]**
+>
+> The paragraph above reasons in three steps. Steps 1 and 2 — *nftables sees connections, not
+> requests*, and *a CONNECT proxy without interception sees only `CONNECT host:443` and a byte
+> count* — are correct and unaffected. **Step 3 smuggles in a quantifier.** The objection to TLS
+> interception is imported from `rg2-containment.md` §3.5, and that objection is entirely about
+> **one destination**: interception would write the operator's API key into a proxy log. That is
+> decisive *for the Anthropic API channel* and says nothing about the target channel.
+>
+> The two flows leaving `rg-work` have opposite sensitivity and should never have been governed by
+> one rule. The Anthropic channel carries a secret RedGold must not log, has bounded volume, and
+> **does not need counting**. The target channel carries client application traffic RedGold is
+> **authorised in writing to inspect**, has unbounded volume, and **is the entire requirement**.
+> *The flow that needs counting is the flow that is safe to intercept.* **The conflict this section
+> identified does not exist.**
+>
+> The replacement text proposed in §3.6 of that document: *"Request-rate enforcement outside the
+> workload requires TLS interception, and interception is a per-destination policy, not a global
+> setting. The Anthropic API channel is never bumped — that objection is decisive for that flow.
+> In-scope target destinations may be bumped, and RedGold is authorised in writing to inspect that
+> traffic. Request rate is therefore enforceable at the gateway for bumped destinations and
+> cooperative everywhere else."*
+>
+> **One caution that survives and hardens.** §5 item 9 warns that a gateway rate limit can
+> manufacture a finding, because from inside the guest a gateway drop is indistinguishable from the
+> target throttling. A bumped proxy makes this *worse*, since it can return a synthetic `429` that
+> looks even more like the target's. The quarantine rule stands, and any finding about certificates,
+> cipher suites, protocol versions or HSTS must come from a **spliced** path or it is fabricated.
+>
+> This amendment is **proposed and not yet accepted** — it is written here at the point of the claim
+> so that no reader takes the struck text as current.
 
 **What it costs, and what it breaks.** The rule is generated per engagement from `scope.yaml`
 alongside the destination rules that already have to be generated (`rg2-containment.md` §9 step 4), so
@@ -260,8 +310,11 @@ invalid run** — its findings are quarantined, not reported — because from in
 drop is indistinguishable from the target throttling. That rule is what keeps a safety control from
 becoming a source of fabricated findings.
 
-**Grade: BOUNDARY** for connection rate, byte volume and time-of-day, all of which are real. **Not a
-control at all** for request rate.
+**Grade: BOUNDARY** for connection rate, byte volume and time-of-day, all of which are real.
+~~**Not a control at all** for request rate.~~ **[SUPERSEDED]** — per
+`lab-topology-and-logging.md` §3.6, the grade for request rate becomes **BOUNDARY for bumped
+destinations**, and *not a control* only for spliced destinations and raw-socket tools. The splice
+register names every exception, and every entry in it is a coverage limitation.
 
 ### 2.5 E — post-hoc detection from the ledger
 
@@ -523,12 +576,28 @@ cross-check is four caps.
 
 Written in the order `rg2-containment.md` §10 uses: what is not true, first.
 
-1. **Nothing in this design is a boundary over request rate. Nothing can be.** §2.4 is the finding:
+1. ~~**Nothing in this design is a boundary over request rate. Nothing can be.** §2.4 is the finding:
    the gateway enforces connection rate, byte volume and time-of-day; the variable the fuzz budget is
    written in is invisible outside the TLS tunnel, and RG-2 correctly refuses TLS interception. **Even
    after RG-2 ships in full, request-volume control remains in-guest and cooperative.** This is the
    one control class in the framework that gets no boundary upgrade, and it should be stated in those
-   words rather than allowed to inherit the gateway's credibility by adjacency.
+   words rather than allowed to inherit the gateway's credibility by adjacency.~~
+
+   > **[SUPERSEDED 2026-08-20 by `docs/research/lab-topology-and-logging.md` §3, which states in
+   > §3.6 that this limit "becomes false and must be replaced, not softened".]** The premise it
+   > rests on — that RG-2 refuses TLS interception globally — is wrong; interception is a
+   > per-destination policy. Replacement form: *"Request rate is a boundary for bumped destinations
+   > and cooperative for the rest. The splice register names every exception, and every entry in it
+   > is a coverage limitation."*
+   >
+   > A new limit is added in its place, and it is not optional: **a bumped connection's TLS
+   > properties are the proxy's, not the target's. Any finding about certificates, cipher suites,
+   > protocol versions or HSTS must come from a spliced path, or it is fabricated.**
+   >
+   > Nothing downstream of this changes yet: §3's `scan_run.py` does not exist, the gateway does not
+   > exist, and until both do, request-volume control **is** in-guest and cooperative as a matter of
+   > fact rather than of construction. The correction is to the claim about what is *possible*, not
+   > to the claim about what is *built*. Do not let it upgrade item 2 below.
 
 2. **Until RG-2 step 3 ships, this is detection plus cooperation, and that is all.** The permitted
    sentence today:
@@ -588,7 +657,14 @@ Written in the order `rg2-containment.md` §10 uses: what is not true, first.
 > what we said. If a run exceeds its budget, the engagement stops and you hear about it."
 
 Every clause maps to a mechanism in §3: the plan row, the `SIGKILL`, the post-run count, the blocker.
-None of it claims enforcement outside the workload, because there is none to claim.
+~~None of it claims enforcement outside the workload, because there is none to claim.~~
+
+**[SUPERSEDED 2026-08-20 — the last clause only.]** None of it claims enforcement outside the
+workload, and that remains correct **for as long as no gateway exists**. Per
+`lab-topology-and-logging.md` §3.6, once a bumping gateway is built, one further clause becomes
+sayable — *"For most traffic, the request rate is enforced by a filter outside the testing
+environment, not only by the testing tools"* — and the exceptions must be named if asked. Do not
+say it before the gateway exists.
 
 ---
 

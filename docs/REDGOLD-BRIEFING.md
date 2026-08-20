@@ -1,7 +1,17 @@
+---
+title: RedGold — Architecture Briefing
+date: 2026-08-04
+status: draft — §5 contested (see the marker there); numbers re-checked 2026-08-20
+question: What is RedGold, in one file — its claims, its evidence, and its architecture — for a reader or model that has not seen the 16-file spec?
+currency_audit: 2026-08-20 — docs/research/currency-audit-2026-08-20.md
+---
+
 # RedGold — Architecture Briefing
 
-> Single-file condensation of `docs/specs/redgold/` (15 files, ~1900 lines) for handing to another
-> model or reader. Structured as claims, evidence, and architecture — not explanatory prose.
+> Single-file condensation of `docs/specs/redgold/` (**16 numbered files plus a README, ~2,340
+> lines** — re-counted 2026-08-20; this read "15 files, ~1900 lines") for handing to another
+> model or reader. **It no longer condenses the whole spec:** five sub-project specs (RG-1 through
+> RG-4, ~6,650 further lines) were written on 2026-08-20 and are not reflected below. Structured as claims, evidence, and architecture — not explanatory prose.
 > Authoritative source is the split spec; this is a map, not a replacement.
 > Date: 2026-08-04.
 
@@ -173,6 +183,29 @@
 ---
 
 ## 5. SCOPE MODEL — three artifacts, three rules
+
+> **[CONTESTED — it is four artifacts now, and this section is the one that says "three".** Recorded
+> 2026-08-20 by the currency audit; see `docs/research/strategic-review.md` §1.3.**]**
+>
+> `docs/specs/rg3-test-libraries.md` §5.7.2 adds **`assets/surface.jsonl`**, a surface register
+> subordinate to the asset register, with a good argument: a path is not a host, the register keys on
+> `(identifier, port)`, and a path is unrepresentable in it. RG-3's authorisation analysis of the
+> addition is careful and correct — discovery is not attribution, and `scope_guard.py` needs no
+> change. **The composition cost is elsewhere and RG-3 does not see it:**
+>
+> 1. **Coverage now has two keys.** RG-1 §8.3's asset-coverage assertions are keyed on assets; RG-3
+>    §5.7.4 adds `SURFACE_UNDISPOSED`, blocking `gate_cli.py complete --phase` on a *surface* row. A
+>    phase can be complete under RG-1's rule and incomplete under RG-3's. **The shipped code
+>    implements only the first.**
+> 2. **RG-4's `scope-record.yaml` has no surface concept**, so the client-side artifact defining what
+>    may be touched cannot express the object RG-3 makes phase completion depend on.
+> 3. **Three units of work, one `complete --phase`.** RG-3 §5.7.5 writes *"`COVERAGE_EMPTY_PHASE`
+>    candidate"* about a fuzz **run**; `rg2-rate-control.md` introduces `run_id`, `scan.plan` and
+>    `scan.result` as a third unit alongside phase and engagement.
+>
+> Nothing is resolved. `assets/surface.jsonl` has **no producer and no consumer in `scripts/`**
+> (`docs/wiki/architecture/current.md` §4.4). Read "three" below as the state of the code and not as
+> the state of the design.
 
 | Artifact | Contains | Rule |
 |---|---|---|

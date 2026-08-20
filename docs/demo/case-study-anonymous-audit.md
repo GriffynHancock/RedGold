@@ -1,3 +1,16 @@
+---
+title: "Case study: a one-person security audit, run by an agent team"
+date: 2026-08-04
+status: draft — anonymised; not re-checked against the 2026-08-20 control inventory
+question: What did the prior engagement actually look like, told as an anonymised case study a prospect can read?
+warning: >
+  Client-facing material, and it is about a real engagement. Two checks before it is shown to
+  anyone: (1) the anonymisation pass of 2026-08-20 — no target hostname, tailnet, IP, container,
+  database, repo URL or absolute home path; (2) every enforcement claim against `status.md`'s "NOT
+  enforced" section, which gained nine items on 2026-08-20. The currency audit did not verify this
+  file claim-by-claim.
+---
+
 # Case Study: A One-Person Security Audit, Run by an Agent Team
 
 > **Anonymised.** Shown with the engagement owner's permission, on the condition that the client

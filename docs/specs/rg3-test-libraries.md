@@ -910,6 +910,17 @@ amount of logging fixes it.
 
 #### 5.7.2 `assets/surface.jsonl` — a new artifact
 
+> **[CONTRADICTS `docs/REDGOLD-BRIEFING.md` §5, which is emphatic that the scope model is "three
+> artifacts, three rules". This makes four.** Recorded 2026-08-20 by the currency audit;
+> `docs/research/strategic-review.md` §1.3 assesses the addition as **well-argued and correct on
+> authorisation**, and identifies three composition costs this section does not see: coverage now has
+> two keys (RG-1 §8.3 is asset-keyed, §5.7.4's `SURFACE_UNDISPOSED` is surface-keyed, and the shipped
+> code implements only the first); RG-4's `scope-record.yaml` has no surface concept, so the
+> client-side artifact cannot express the object §5.7.4 makes phase completion depend on; and §5.7.5
+> treats a fuzz **run** as a `COVERAGE_EMPTY_PHASE` candidate, which — with `rg2-rate-control.md`'s
+> `run_id` — makes three units of work against one `gate_cli.py complete --phase`. **Unresolved.**
+> The briefing carries the reciprocal marker. Nothing in `scripts/` reads or writes this file.**]**
+
 One row per discovered path or endpoint. It is a *surface* register, subordinate to the asset
 register, and it deliberately does not reuse the CANDIDATE/CONFIRMED vocabulary, because that
 vocabulary is about **attribution** — "does the client own this?" — and a path on a host we have

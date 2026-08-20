@@ -79,6 +79,26 @@ other than the signer and the named technical contact.
 
 **Explicitly permitted to cross Anthropic's servers:** everything. The operator has stated that model
 inference over client documents is acceptable to them; the constraint is on the *operator's eyes*.
+
+> **[CONTRADICTED — `docs/research/data-sovereignty.md` §4.2 item 4 (gitignored) reaches the opposite
+> conclusion on the same day, and names the gap this sentence creates as *"the misleading-conduct
+> exposure"* under ACL s 18. Recorded 2026-08-20 by the currency audit; see also
+> `docs/research/strategic-review.md` §1.6 and the reciprocal marker at
+> `docs/specs/redgold/11-governance.md` §15.5. **Unresolved, and `[VERIFY]` — it needs a lawyer.**]**
+>
+> The distinction the two documents are talking past: *the operator* consenting to model inference
+> over client documents is not *the client* consenting, and the client is the one whose personal
+> information it is. **The permission recorded here is recorded in a spec the client never sees.** If
+> `rg-scoping` runs on the client's machine over the client's documents and nothing in the
+> client-facing skill says the documents cross to a US-hosted model, the client has not been told —
+> and `data-sovereignty.md` argues that presenting the exercise as compliance-improving while it is
+> itself creating a cross-border disclosure is the exposure, not the disclosure itself.
+>
+> **What is not in dispute:** the design decision below — spend nothing on preventing the model from
+> reading, spend everything on controlling what lands in the bundle — is sound and is not what the
+> contradiction is about. What is missing is a **disclosure sentence in the client-facing skill**.
+> `data-sovereignty.md` §2 also establishes that an Australian-residency inference path exists and is
+> reachable by configuration, which changes what that sentence would have to say.
 So the design spends nothing on preventing the model from reading the documents, and spends
 everything on controlling what lands in the bundle. Designing against the wrong threat here would
 produce a skill that cannot read the documents it exists to read.
@@ -1140,6 +1160,19 @@ Both write the same file.
 
 ### 8.3 `environment-delta.yaml`
 
+> **[CONTRADICTED — `docs/specs/rg2-containment.md` §8.3 models this same object as a `parity:` block
+> **inside `scope.yaml`**, with 5 dimensions instead of 12, a boolean instead of this tri-state, and
+> sourced *"from the scoping questionnaire (Part 2 of RedGold)"* — which is the mechanism this
+> section's "Rejected alternative" note rejects by name. Same date, same status. Recorded 2026-08-20
+> by the currency audit; the design question is **open** and neither side has been adopted.**]
+>
+> The full comparison table is in `rg2-containment.md` §8.3 and in
+> `docs/research/strategic-review.md` §1.1, which assesses **this** design as the better one on every
+> axis. **But RG-2's block carries one rule this section does not**, and it should survive any merge:
+> *a divergence in TLS termination, environment config or infrastructure makes "we found nothing" an
+> unsupportable sentence about production.* §8.4's mechanical consequences do not include it. The
+> strategic review's recommendation is to migrate it here as a fourth consequence — **not yet done**.
+
 Twelve dimensions. Each takes `same` | `differs` | `unknown`, plus a note. **`unknown` is a legal
 value and it costs the same as `differs`** — the same discipline as `environment: unknown`.
 
@@ -1243,6 +1276,28 @@ Three consumers, one renderer. The alternative — a bespoke checklist per site 
 diverge and how one of them silently stops listing an item.
 
 ### 9.2 What `/rg:close` does today
+
+> **[COMPOSITION CONFLICT — this document's §9.3 is the second of three incompatible engagement
+> lifecycles, and nothing owns the composite. Recorded 2026-08-20 by the currency audit; see
+> `docs/research/strategic-review.md` §1.2 and the reciprocal marker at
+> `docs/specs/rg1-finding-integrity.md` §9.1a.]**
+>
+> Two specific problems with §9.3's nine-item preflight, neither of which is a reason to abandon it:
+> **five of its new soft items are sourced from artifacts that do not exist** (`environment-delta`,
+> `scope-facts`, credential attestation, evidence retention, harvest), and it makes `/rg:harvest` a
+> checklist item when `commands/harvest.md` declares itself **NOT IMPLEMENTED**.
+>
+> The third lifecycle is `rg2-containment.md` §3.4/§8.2's containment sequence, whose step 6 —
+> revert `rg-work` to snapshot — **destroys the machine the ledgers and evidence are on** unless
+> evidence was pulled first. That ordering dependency appears in RG-2 and in neither this document
+> nor RG-1.
+>
+> **Also correct the paragraph below before relying on it.** It describes `close_violations()` as
+> refusing on three conditions; the current code refuses on **four** — `COVERAGE_EMPTY_PHASE`,
+> `PHASE_NEVER_COMPLETED`, `REPORT_STALE` and `GATE_1_VOID` (the S10 fix). And two of the four are
+> defective: `REPORT_STALE` reads a `created` field only `baseline_scan.py` writes, and
+> `COVERAGE_EMPTY_PHASE`'s phase discrimination reads a `phase` field nothing writes. See
+> `docs/wiki/architecture/current.md` §6 D-1 and D-2, and `status.md` "NOT enforced" items 7 and 8.
 
 `gate_cli.cmd_close` computes `close_violations()` and refuses on any of three: `COVERAGE_EMPTY_PHASE`
 across the whole engagement, `PHASE_NEVER_COMPLETED`, and `REPORT_STALE`. All three are hard; there is

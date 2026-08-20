@@ -67,6 +67,34 @@ notification state. The prior engagement needed exactly this and improvised it.
 
 ### 15.5 Evidence handling
 
+> **[INCOMPLETE — this section controls the *durable* archive and controls nothing about the
+> *transient* copy that crosses into model context, and on one reading of APP 8 the transient copy is
+> the cross-border event and the archive is not. Recorded 2026-08-20 by the currency audit; see
+> `docs/research/data-sovereignty.md` §3.5 (gitignored) and `docs/research/strategic-review.md` §1.6.
+> **Not resolved; the reading is `[VERIFY]` and needs a lawyer.**]**
+>
+> Encryption at rest, non-removal from the operator's machine, and 90-day destruction are all
+> properties of the file on disk. Every one of those bytes has *already* been in a model context
+> window on a server that may be offshore, and on `data-sovereignty.md`'s reading of APP 8, **duration
+> is irrelevant** — so the leg this section regulates may not be the leg that matters.
+>
+> Two same-day documents make it worse rather than better:
+>
+> - **`docs/specs/rg4-scoping-questionnaire.md` §1.2** records as a settled decision that
+>   *"Explicitly permitted to cross Anthropic's servers: **everything**"* — in a spec the client never
+>   sees. `data-sovereignty.md` §4.2 item 4 calls the absence of that sentence from the client-facing
+>   skill *"the misleading-conduct exposure"* (ACL s 18). **Two specs, one day, opposite conclusions
+>   about the same disclosure.** A reciprocal marker is at RG-4 §1.2.
+> - **`docs/specs/rg3-test-libraries.md` §3.4** introduces `evidence_mode: tool_output`, pointing
+>   `evidence_ptr` at raw nmap XML or ZAP JSON. Those artifacts are **unredacted by construction** —
+>   `redact.py` operates on tool output in the transcript, not on files a tool wrote itself — and RG-3
+>   §6.5 works the redaction collision out only for the *secrets* mode, never for `tool_output`.
+>
+> Also note §15.6 below requires `/rg:harvest` to have run before an engagement is complete.
+> **`/rg:harvest` is not built** (`commands/harvest.md` declares itself NOT IMPLEMENTED), and
+> `cleanup_gate.py` — named there as enforcing the first item — **does not exist** (`status.md` "NOT
+> enforced" item 2). That checklist cannot currently be satisfied as written.
+
 `evidence/` may contain real personal data. It is encrypted at rest, never leaves the operator's
 machine except in the agreed deliverable, and is **destroyed on a defined schedule** (default: 90
 days after report delivery, or immediately on client request). Retention beyond that requires the

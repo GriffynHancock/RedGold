@@ -1403,12 +1403,26 @@ cheapest thing here by an order of magnitude.
 **Coverage first, then `rg1-implementation-surface`'s order.** Each item names: files touched, tests
 that break, and the **injected fault** it needs in `scripts/verify_controls.py`.
 
-On the last of those: `verify_controls.py` copies the repo to a temp dir and, for each of **21**
-`Mutation(name, file, old, new, test_module, breaks)` entries (`:45-169`), replaces `old` with `new`
-in one file, runs the named test module, and asserts it goes **red**. It has **no entry for any of
-the six RG-1 changes today** (`rg1-implementation-surface.md:444-455`). **A new control without a
-corresponding injected fault grows the test count without growing discrimination** — the count is
-not the claim.
+On the last of those: `verify_controls.py` copies the repo to a temp dir and, for each
+`Mutation(name, file, old, new, test_module, breaks)` entry, replaces `old` with `new` in one file,
+runs the named test module, and asserts it goes **red**. **A new control without a corresponding
+injected fault grows the test count without growing discrimination** — the count is not the claim.
+
+> **[COUNTS UPDATED 2026-08-20 by the currency audit.]** This paragraph said **21** entries and
+> *"no entry for any of the six RG-1 changes"*; §9.3 below said *"33 injected faults"* after
+> Release 2. Both are historical. **Measured at `de109fa`: 60 injected faults, 60 caught, exit 0 —
+> and the suite is 605 passed, 18 skipped, 141 subtests.** Releases 1 and 2 and their fix round all
+> have faults.
+>
+> **And the count still is not the claim, for a reason this section did not anticipate.** A fault
+> can only be caught if the control it mutates can fire at all.
+> `docs/wiki/architecture/current.md` §7 establishes that **every one of the 19 unfireable controls
+> in its §6 is invisible to all 60 faults**, because mutating dead code changes no test outcome.
+> Separately, `docs/research/test-suite-review-2026-08-20.md` scores the suite at **68%** against
+> *fine-grained* mutations (40 survivors of 126), with survivors clustered on band boundaries,
+> closed-vocabulary membership and fail-closed defaults — the three places a control is wrong by one
+> rather than wrong by a mile. **A fault list that only contains coarse mutations
+> (`if X:` → `if False:`) measures whether a control exists, not whether its boundary is right.**
 
 ### 9.1 Release 1 — coverage. No dependencies. Ships before E2.
 
@@ -1422,6 +1436,31 @@ Ten lines between C1 and C2. **They are the only thing preventing RG-1's first r
 pure suppression release** — and C3 is what stops them being opt-in.
 
 ### 9.1a Why closure is a command and not a hook
+
+> **[COMPOSITION CONFLICT — three documents assume three different engagement lifecycles, and
+> **nothing owns the composite**. Recorded 2026-08-20 by the currency audit; see
+> `docs/research/strategic-review.md` §1.2. The reasoning in this section is not disputed.]**
+>
+> - **This section (RG-1 §9.1a)** establishes that there is no Claude Code lifecycle event for
+>   engagement close, and that `/rg:close` applies three hard refusals.
+> - **`rg4-scoping-questionnaire.md` §9.3** extends close into a **nine-item hard/soft preflight**
+>   with `--override <item> --reason`. Five of its new soft items are sourced from artifacts that do
+>   not exist (`environment-delta`, `scope-facts`, credential attestation, evidence retention,
+>   harvest), and one is `/rg:harvest`, which `commands/harvest.md` itself declares NOT IMPLEMENTED.
+> - **`rg2-containment.md` §3.4 / §8.2** adds a *containment* lifecycle on top: provision, snapshot,
+>   handover, revert-to-snapshot as the abort button, teardown with `rg-reconcile`, key revocation.
+>   **None of those steps appears in `/rg:close`'s completeness set.**
+>
+> **The one with a data-loss failure mode:** RG-2 §3.4 step 6 reverts `rg-work` to snapshot, which
+> **destroys the machine the ledgers and evidence are on** unless evidence was pulled first. That
+> ordering dependency is stated in RG-2 and **nowhere in RG-1 or RG-4**, and no test would catch it.
+> The strategic review ranks this as the disagreement most likely to produce a real incident.
+>
+> **And two of this section's own three refusals are currently defective** —
+> `docs/wiki/architecture/current.md` §6 D-1 and D-2. `REPORT_STALE` reads a `created` field only
+> `baseline_scan.py` writes, so the first agent-authored finding blocks `/rg:close` permanently; and
+> `COVERAGE_EMPTY_PHASE`'s phase discrimination reads a `phase` field nothing writes, so it degrades
+> to a single engagement-wide check. See `status.md` "NOT enforced" items 7 and 8.
 
 C1 and C2 as first built were both **opt-in**: an operator who never ran `report.py --check` or
 `gate_cli.py complete` was stopped by nothing. Under P1 (*enforcement is mechanical, never
@@ -1511,7 +1550,10 @@ Two further faults belong to this release:
 | §3.4 no-defaulting-lookup rule | *"rank lookup defaults to zero"*: `CAPABILITY_RANK[value]` → `CAPABILITY_RANK.get(value, 0)`. Module `tests.test_severity_model`. This is the 2026-08-04 incident's exact shape and must be caught |
 | §11.2 mechanical citation bar | *"marketing deny-list emptied"*: the literal deny-list frozenset → `frozenset()`. Module `tests.test_report` |
 
-**Total after release 2: 33 injected faults, all caught.** 21 pre-RG-1, +3 for release 1 (C1–C3),
+~~**Total after release 2: 33 injected faults, all caught.**~~ **[STALE — measured 2026-08-20 at
+`de109fa`: 60 injected faults, 60 caught.** The +27 since are the S1–S11 fix round and RG-2 step 1's
+four logging faults. See the note in §9's preamble for why the number is a weaker claim than it
+reads.**]** 21 pre-RG-1, +3 for release 1 (C1–C3),
 +9 for release 2 — more than the two this table predicted for E2 and E1, because each control got a
 fault aimed at the *direction* it can fail in rather than one aimed at the feature: the cap
 inverted to a floor, fail-closed inverted so an unknown environment caps, the `code_defect` default

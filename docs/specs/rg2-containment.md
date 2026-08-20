@@ -955,6 +955,32 @@ recording. Specifically:
 
 ### 8.3 What the scope record must carry about dev-vs-prod divergence
 
+> **[CONTRADICTED — `docs/specs/rg4-scoping-questionnaire.md` §8.3 models this same object
+> incompatibly, and explicitly rejects the mechanism this section assumes. Recorded 2026-08-20 by the
+> currency audit; the design question is **open** and neither side has been adopted.]**
+>
+> | | **here (RG-2 §8.3)** | **RG-4 §8.3** |
+> |---|---|---|
+> | Artifact | a `parity:` block **inside `scope.yaml`** | **`environment-delta.yaml`**, a separate file |
+> | Dimensions | 5 | 12 |
+> | Value type | `differs: true\|false` (boolean) | `same \| differs \| unknown` (tri-state; `unknown` costed as `differs`) |
+> | Source | *"filled from the scoping questionnaire (Part 2 of RedGold)"* | **explicitly rejects that**: *"Rejected alternative: a fifth block of `rg-scoping`… Its respondent is different… its timing is different"* |
+> | When | scoping time, client-declared | **after signature**, with the operator present and a named platform engineer |
+> | Downstream | divergence in three named areas **blocks the "no findings" conclusion** | every `differs`/`unknown` becomes a report coverage line; three rows become **findings**; `unknown` raises non-blocking `ENV_DELTA_UNESTABLISHED` |
+>
+> The two documents carry the same date and the same status. **This section names a mechanism it
+> expects RG-4 to supply, and RG-4 considered that exact mechanism and rejected it with reasons.**
+>
+> `docs/research/strategic-review.md` §1.1 assesses RG-4's design as the better one on every axis —
+> the tri-state, the twelve dimensions, the named human, the post-signature timing — **but identifies
+> one rule that exists only here and should survive any merge**: *a divergence in TLS termination,
+> environment config or infrastructure makes "we found nothing" an unsupportable sentence about
+> production.* RG-4 has no equivalent. **Do not delete this block without carrying that rule across.**
+>
+> Neither model is implemented. `scope.py` has no `parity` field, and
+> `docs/wiki/architecture/current.md` §4.1 notes that if one lands without a matching `to_dict()`
+> entry, `scope_cli.py amend` will **silently delete it** on the first amendment (§6 D-12).
+
 The "secure on my machine" problem is a *divergence* problem, so the divergence must be recorded as
 data at scoping time — while the client is available and cooperative — not reconstructed at report
 time. Add to `scope.yaml` a `parity` block, filled from the scoping questionnaire (Part 2 of RedGold),
@@ -1015,9 +1041,19 @@ standing. Either `rg-work` replaces the daily working guest, or the fallback (ma
 Fusion vmnet — which still satisfies property 1, at a cost on properties 3–5) is taken. Building
 `rg-gw` before answering this risks building a VM that cannot be run. `[VERIFY] total RAM on the Mac`.
 
+**Status, 2026-08-20: step 1 is BUILT and committed (`acbc165`). Steps 2–11 are unstarted.**
+`docs/research/strategic-review.md` §4 item 2 dissents from this ordering: it recommends building
+steps 2 and 8's cheap components (§2.1 non-sudo user, §2.2 root-owned hooks and `settings.json`,
+§2.5 `--cap-drop=ALL`, §4's `open-vm-tools` removal — hours, not days, and they close the
+*agent edits its own controls* class outright) and **stopping above that** — no gateway VM, no
+ruleset generator, no ulogd normaliser, no `rg-reconcile`, no mini-PC lab — until a client's scope
+requires it. Its stated grounds: zero observed instances of the threat, and a topology
+`containment-architecture.md` §7 concedes may not fit in the operator's RAM. **No decision is
+recorded either way.**
+
 | Order | Item | Effort | Risk reduced | Why here |
 |---|---|---|---|---|
-| 1 | `scope_guard.py` emits `scope.allow` / `scope.deny` / `scope.undeterminable` rows, with `resolved_ips`, `corr_id`, and the `check_url()` path covered (§5.1–5.3) | 2–3 h | Detection only — but it is the **prerequisite for everything downstream**, and it makes denials survive the session | Cheapest real improvement in the list; useful standalone; already specified |
+| 1 | ✅ **BUILT** (`acbc165`) — `scope_guard.py` emits `scope.allow` / `scope.deny` / `scope.undeterminable` rows, with `resolved_ips`, `corr_id`, and the `check_url()` path covered (§5.1–5.3) | 2–3 h | Detection only — but it is the **prerequisite for everything downstream**, and it makes denials survive the session | Cheapest real improvement in the list; useful standalone; already specified. See §10.2 for what it does and does not earn |
 | 2 | `.vmx` `isolation.tools.*` + `guest_rpc.*` keys, `open-vm-tools` stripped, `verify_containment.py` checks 1–7, 9, 10 (§4) | 3–4 h | **Closes a boundary-precondition hole that is live today** (§4.1) | Highest risk-per-hour in the build. A hole that bypasses the boundary outranks work that strengthens it |
 | 3 | `rg-gw` VM: custom vmnet, nftables default-deny, static Unbound, routing (§1 layer 5) | 4–6 h | **The boundary.** Everything §10 permits saying depends on this | The product. Longer than steps 1–2 but it is what is being bought |
 | 4 | `nftables.conf` + `unbound.conf` generators from `scope.yaml`, with §7.2's two refusals + tests | 5–7 h | Makes step 3 per-engagement rather than hand-maintained | Without it step 3 decays into a static ruleset nobody regenerates |
@@ -1129,10 +1165,24 @@ Until `rg-gw` is enforcing, the permitted sentence remains exactly what §9.9 se
 
 > **"Out-of-scope targets are refused by tooling and logged."**
 
-Never *"cannot happen."* And note that even this sentence is **currently ahead of the code on one
+Never *"cannot happen."* ~~And note that even this sentence is **currently ahead of the code on one
 word**: nothing is logged today (§5.0). Until step 1 of §9.1 lands, the accurate sentence is *"refused
 by tooling"* — the "and logged" clause is earned by a two-to-three-hour change and should be made
-true rather than dropped.
+true rather than dropped.~~
+
+> **[SUPERSEDED 2026-08-20 — step 1 of §9.1 has landed. The "and logged" clause is now earned.]**
+> `scope_guard.py` appends a `scope.allow` / `scope.deny` / `scope.undeterminable` row to
+> `ledger/activity.jsonl` on every decision with a network destination, with `resolved_ips` and
+> `corr_id`, and the `check_url()` path is covered. Shipped in `acbc165`; `verify_controls.py` carries
+> injected faults for it (*"ledger truncates instead of appending"*, *"check_url stops logging"*,
+> *"corr_id is constant"*, *"undeterminable denials folded into scope.deny"*, all caught).
+>
+> **The sentence above is now true as written, and no further.** Two things it still does not buy:
+> `gate_ref` is stamped `null` on every row, so no logged action joins to any Gate 1 approval
+> (`docs/wiki/architecture/current.md` §6 D-14); and the log is written **by the workload, inside the
+> blast radius**, so a workload that has escaped forges it (§5.6). Reconciliation against an off-host
+> egress log does not exist because there is no gateway to reconcile against — steps 3–7 of §9.1 are
+> unstarted.
 
 ### 10.3 What upgrade this earns, and the preconditions
 

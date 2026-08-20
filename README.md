@@ -168,6 +168,11 @@ Then the rest of the command set, run inside the engagement directory:
 - **`/rg:harvest`** — at engagement close, promote redacted lessons into this repo's playbook
   library. **Not built** — see below.
 - **`/rg:report`** — generate the client deliverable from validated findings on disk.
+- **`/rg:close`** — the engagement close gate (`scripts/gate_cli.py close`). Built. It refuses on a
+  voided Gate 1 and on no completed phase; its stale-deliverable and empty-corpus refusals are
+  currently defective — see items 7 and 8 of `status.md`'s "NOT enforced". Nothing forces it to be
+  run: there is no Claude Code lifecycle event for engagement close, so the absence of a
+  `gate.close` row is evidence of a skip rather than a prevention of one.
 
 Take the exact invocations from `commands/*.md` — each command file documents its own flags,
 refusals, and what it does and does not enforce.
@@ -182,12 +187,18 @@ unless noted:
 | Scope + ports + ceiling | `scope_guard.py` | out-of-scope host, unauthorised port, over-ceiling action, undeterminable target, outside window |
 | Hand-rolled loops | `no_handrolled_loops.py` | loops, `xargs`, brace expansion, curl globbing, `-Z`, backgrounded requests |
 | Write authorisation | `canary_check.py` | a write with neither a canary proven deleted nor plan pre-approval |
-| Subagent nesting | `no_nesting.py` | a worker calling `Agent`/`Task`, recorded as a blocker |
-| Findings validation | `validate_findings.py` | a subagent stopping with invalid findings; auto-demotes unresolvable evidence |
-| Credential redaction | `redact.py` | strips credential values from tool output, keeping class + length so the finding stays reportable |
+| Subagent nesting | `no_nesting.py` | a worker calling `Agent`, `Task`, `TaskOutput` or `AskUserQuestion`, recorded as a blocker (8 further nesting tools are **not** wired) |
+| Findings validation | `validate_findings.py` | a subagent stopping with invalid findings; auto-demotes unresolvable evidence (four of its checks are inert on this path) |
 | Asset promotion | `scope_cli.py` | promotion on one signal, on an IP, or outside the boundary |
-| Baseline (P10) | `baseline_scan.py` | n/a — fixed checklist, records negatives |
-| Status / report | `regen_status.py`, `report.py` | unverified above-Low findings never reach the client body |
+| Gate 1 plan/approve | `gate_cli.py` | work proceeding without a recorded, approved plan |
+| Engagement close | `gate_cli.py close` | closing with no completed phase, or a voided Gate 1 |
+| Baseline (P10) | `baseline_scan.py` | n/a — fixed checklist, records negatives; **it self-certifies its own verification** |
+| Status / report | `regen_status.py`, `report.py` | an above-Low finding with a weak `verified` field never reaches the client body |
+
+**This table is a summary and it is not the honest one.** `status.md`'s "NOT enforced" section now
+carries **fifteen** disclaimers, nine of them added on 2026-08-20 for controls that are wired,
+tested, and cannot fire on any input a current producer generates. Read
+`docs/wiki/architecture/current.md` §6 before treating any row above as assurance.
 
 ## What is NOT enforced
 
@@ -205,6 +216,15 @@ Copied faithfully from `status.md` — do not describe any of these as working:
    holds.
 5. **Off-host egress filtering (§9.9)** — the only real boundary. Does not exist.
 
+**Items 6–15 live in `status.md` and are not reproduced here.** They were added on 2026-08-20 and
+they are the substantial ones: report freshness (`REPORT_STALE`) fires on every engagement with an
+agent-written finding rather than none; phase-scoped coverage degrades to one engagement-wide
+check; the baseline self-certifies and three of its checks fire on a bare `200`, which together can
+put a fabricated critical in a client report; `[VERIFY]` content is not actually stripped from
+deliverables; `crown_jewels` and `forbidden_actions` are read by nothing; and credential redaction
+may be entirely inert (`[VERIFY]`, unconfirmed). **Do not summarise this section from this file** —
+`status.md` is authoritative and this copy has already been stale once.
+
 `scope_guard.py` is defence-in-depth, not a security boundary. The honest claim is
 **"out-of-scope targets are refused by tooling and logged,"** never "cannot happen." Anything the
 agent runs inside the same host as the enforcement layer can, in principle, edit that layer; there
@@ -213,23 +233,43 @@ is no filtering outside the guest that would stop it.
 ## Testing
 
 ```sh
-/usr/bin/python3 -m unittest discover -s tests
-/usr/bin/python3 scripts/verify_controls.py
+/usr/bin/python3 -m pytest -q          # or: /usr/bin/python3 -m unittest discover -s tests
+/usr/bin/python3 scripts/verify_controls.py   # ~2.5 minutes; do not interrupt it
 ```
+
+**Measured 2026-08-20 at `de109fa`: 605 passed, 18 skipped, 141 subtests, exit 0; 60 injected
+faults, 60 caught, exit 0.** Note the interpreter — plain `python3` on this machine lacks PyYAML
+and the suite will not run under it.
 
 The first is the ordinary suite. The second breaks each control deliberately — reverts the fix,
 confirms the check now fails, restores it — to prove the tests would actually notice if a control
 stopped working. A passing suite only shows the code does something; fault injection is what shows
 that something would catch it stopping. Run the second script before trusting a green first one.
 
+**Neither number is assurance, and two measurements bound what they are worth.** A mutation study
+(`docs/research/test-suite-review-2026-08-20.md`) scores the suite at **68%** against fine-grained
+mutations, with survivors clustered on band boundaries, closed vocabularies and fail-closed
+defaults — and with `no_handrolled_loops.py` at 25% and `redact.py` at 55%, the two files this repo
+most often describes as working. And every one of the 19 unfireable controls in
+`docs/wiki/architecture/current.md` §6 is invisible to all 60 faults, because a mutation to a
+control that cannot fire changes nothing.
+
 ## The audit history
 
-Three adversarial rounds — a hostile spec review, a structural audit of the design's internal
-consistency, and a code-level audit run as two rotating hostile personas against the built
-controls — found **21 real defects** that the project's own self-written suite and prior review
-passes had missed, including one that let an unverified finding reach a client report. The
-code-level round alone found 11 defects that 308 self-written tests had not caught, and every one
-now has a regression test in `tests/test_audit_regressions.py`.
+**Eight adversarial rounds** are on record — see the table in `status.md`, which is authoritative.
+The first four (a hostile spec review, a structural audit of the design's internal consistency, and
+a code-level audit run as two rotating hostile personas against the built controls) found **21 real
+defects** that the project's own self-written suite and prior review passes had missed, including
+one that let an unverified finding reach a client report. The code-level round alone found 11
+defects that 308 self-written tests had not caught, and every one has a regression test in
+`tests/test_audit_regressions.py`.
+
+Four further rounds ran on 2026-08-20 and found more than the first four combined: a claim audit
+(2 contradictions), an RG-1 code review (**12 defects, 2 critical**, in code that had just shipped
+green), a mutation study of the test suite (**68% fine-grained mutation score**, 40 survivors), and
+an architecture walk (**19 wired controls that cannot fire**). The last of those found defects that
+no test and no fault injection could have found, because mutating a control that cannot fire
+changes no test outcome.
 
 This is the honest headline for this project, not a footnote: a framework's own tests are written
 by whoever wrote the code, and inherit the same blind spots exactly. The methodology — how to

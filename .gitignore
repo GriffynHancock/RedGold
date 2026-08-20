@@ -1,40 +1,54 @@
-# Client data must NEVER enter this repo
+# ============================================================================
+# WHITELIST MODEL. Ignore everything; allow only what is deliberately public.
+#
+# Rationale: this repo is PUBLIC. A blacklist fails open — anything nobody
+# thought to exclude gets published. A whitelist fails closed. Adding a file
+# to the public surface must be a decision someone makes, not the default.
+#
+# Before adding an allow rule, ask: does this need to be public, or is it
+# merely not embarrassing? Those are different tests.
+# ============================================================================
+
+# Ignore everything by default
+*
+
+# Directory traversal must stay open or nothing below matches
+!*/
+
+# --- The public surface ---------------------------------------------------
+
+!.gitignore
+!README.md
+!LICENSE*
+
+# The plugin itself — this is the artifact people install and read
+!.claude-plugin/**
+!agents/**
+!commands/**
+!skills/**
+!playbooks/**
+!templates/**
+
+# Implementation and its tests
+!scripts/**
+!tests/**
+
+# --- Never public, even if a rule above would otherwise match --------------
+
+# Build noise
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Client and target data — hard rule 3. Engagements live in ~/engagements/.
 *.secrets.env
 .secrets.env
 engagements/
 evidence/
 **/authorization/
 
-# Client and target data — see CLAUDE.md hard rule 3
-#
-# These three globs exist to catch a stray per-engagement artifact (recon inventory, pre-audit
-# notes, a verification writeup) if one is ever created inside this repo by mistake — engagements
-# live in ~/engagements/, never here. Unanchored, `*-verification.md` also matched
-# docs/specs/redgold/08-findings-and-verification.md — a real spec file, not client data — and
-# because the shell's grep respects .gitignore, that file went invisible to working-tree searches.
-# That is how a client name once survived into a commit undetected, caught only by a git-history
-# check. The negations below keep the catch-all broad everywhere else while explicitly exempting
-# the spec directory. Do not "simplify" this back to the three bare globs.
-*-inventory.md
-*-pre-audit.md
-*-verification.md
-!docs/specs/**/*-inventory.md
-!docs/specs/**/*-pre-audit.md
-!docs/specs/**/*-verification.md
-
-# Build noise
-__pycache__/
-*.pyc
-
-# Operator's own legal and commercial exposure analysis — NOT for a public repo.
-# These analyse the operator's liability (tort exposure, unqualified-practice risk, PI gaps) and
-# are [VERIFY]-marked throughout. A counterparty reads a published liability analysis as a
-# pre-built brief. They stay on disk, out of git. See REDGOLD-NEEDS-FROM-YOU.md.
-docs/research/privacy-act-feasibility.md
-docs/research/data-sovereignty.md
-docs/research/sovereignty-and-pre-ingestion-controls.md
-
-# Engagement pipeline is not framework state. Which client is next belongs in the operator's own
-# notes or in ~/engagements/, never in a public repo — naming a prospective target next to
-# "not yet authorised" is the worst thing that could go public here.
-docs/research/*-pipeline.md
+# Internal research, strategy, legal exposure, and the wiki. These contain
+# findings about our own controls, harness bypass techniques, commercial
+# analysis and legal exposure. None of it needs to be public, and some of it
+# is actively unhelpful to publish.
+docs/

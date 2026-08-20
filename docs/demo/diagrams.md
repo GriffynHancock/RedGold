@@ -1,3 +1,14 @@
+---
+title: Pitch diagrams
+date: 2026-08-04
+status: draft — not re-checked against the 2026-08-20 control inventory
+question: What three standalone diagrams explain RedGold in a demo, with a spoken-length caption and an "if they ask" note for each?
+warning: >
+  Client-facing material. Before showing any of these, check every enforcement claim against
+  `status.md`'s "NOT enforced" section, which gained nine items on 2026-08-20. This file was not
+  audited claim-by-claim by the currency audit.
+---
+
 # Pitch diagrams
 
 Three diagrams for the demo. Each is standalone: title, a spoken-length caption, the diagram, then
