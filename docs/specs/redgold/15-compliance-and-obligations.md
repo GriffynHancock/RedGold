@@ -38,18 +38,21 @@ Three things follow from taking obligations seriously:
 
 ### 21.2 The commercial trigger `[VERIFY]`
 
-The **Privacy Act small business exemption** — which has historically excluded businesses under a
-turnover threshold from the Act's obligations — is reported to be ending. The operator's
-understanding as of 2026-08-04 is that removal takes effect **late 2026**.
+**Corrected 2026-08-20** (see `docs/research/privacy-act-feasibility.md`): the **Privacy Act small
+business exemption** (s 6D) has **not** been repealed and carries no commencement date for removal.
+Compilation No. 104 (4 June 2026) shows no amendment to s 6D since 2012, and the $3,000,000 annual
+turnover threshold is intact. Removal remains a government "agreed in principle" commitment only,
+subject to further consultation `[VERIFY]` — no bill, no date. The "late 2026" figure previously
+stated here does not hold and should not be repeated.
 
-`[VERIFY]` — required before this appears in any marketing or client document: the exact
-instrument, the commencement date, the turnover threshold being removed, any transitional period,
-and which obligations attach immediately versus phased.
-
-If accurate, the commercial consequence is large and specific: **a population of Australian small
-businesses becomes subject to privacy obligations they have never had to meet, on a known date,
-with no in-house capability to meet them.** That is the market RedGold is actually built for, and it
-arrives with a deadline attached.
+The dated market instead rests on two narrower, already-legislated obligations, both `[VERIFY —
+under audit]`: AML/CTF "tranche 2" reporting entities (real estate professionals, dealers in
+precious metals/stones, lawyers, conveyancers, accountants, trust and company service providers)
+reportedly pulled into the Act for their AML/CTF-related activities from 1 July 2026 via s 6E(1A);
+and automated-decision-making transparency (APP 1.7–1.9) reportedly commencing 10 December 2026 for
+every existing APP entity. These are better-qualified, better-dated hooks than the exemption ever
+was, but neither is yet confirmed to the standard this repo requires before a client or marketing
+document may state it as fact.
 
 **RedGold's posture regardless of the date: act as though the obligations already apply.** They
 represent baseline practice that any business holding personal information should already meet, and

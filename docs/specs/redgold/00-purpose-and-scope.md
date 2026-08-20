@@ -13,7 +13,7 @@ RedGold is a Claude Code plugin for professional, authorized web and API securit
 startup products — the class of application increasingly written by AI coding agents for
 non-technical founders.
 
-The operating thesis is in `/home/hiranya/NORTH_STAR.md`. In one line: move from *"I can help you
+The operating thesis is in `~/NORTH_STAR.md`. In one line: move from *"I can help you
 check out your webapp"* to *"pay me to fix your product's security, and to arm your agents to keep
 it secure."*
 

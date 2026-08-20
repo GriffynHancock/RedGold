@@ -431,7 +431,13 @@ before fixing the names.
 **Why it belongs in the spec now, unbuilt:**
 
 - The off-host egress log (§9.9) and `scope_guard`'s decisions must be **reconciled**. Two logs in
-  one schema makes that a query; two logs in two schemas makes it a project.
+  one schema makes that a query; two logs in two schemas makes it a project. **This is a requirement
+  pending RG-2, not a property of the current system.** As of this writing `scope_guard.py` emits no
+  decision log at all — no ledger row on allow (silent by design) and none on deny either (denials go
+  to stdout/stderr only, never to a file). There is no `scope_guard` log of either kind to reconcile
+  against yet, in either direction; see `docs/research/containment-architecture.md` §5. Making
+  `scope_guard.py` emit a `scope.allow`/`scope.deny` ledger row is a build task that belongs to RG-2,
+  not an assumption this spec section may rely on until it lands.
 - The defensive handoff (Subsystem E) already promises drift monitoring. A client who receives
   RedGold's guardrail pack should be able to forward *its* events to whatever they already run.
 - It is the natural upgrade path from one-off engagement to retainer: the same envelope that records

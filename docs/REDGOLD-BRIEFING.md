@@ -438,10 +438,16 @@ Do not treat any of it as accurate. RedGold does not provide legal advice.**
 
 - **Core argument:** you cannot talk about risk without impact, and for an Australian small business
   impact is mostly legal. Severity without consequence is an opinion about software.
-- **Commercial trigger `[VERIFY]`:** Australia's Privacy Act small business exemption is reported to
-  end late 2026. If accurate, a population of businesses becomes subject to obligations they have
-  never met, on a known date, with no in-house capability. Posture regardless of date: act as though
-  the obligations already apply.
+- **Commercial trigger — corrected 2026-08-20** (see `docs/research/privacy-act-feasibility.md`):
+  the small business exemption (s 6D) has **not** been repealed and carries no commencement date for
+  removal; Compilation No. 104 (4 June 2026) shows no amendment to s 6D since 2012 and the
+  $3,000,000 turnover threshold intact. Removal remains a government "agreed in principle"
+  commitment only, subject to further consultation `[VERIFY]` — no bill, no date. The dated market
+  instead rests on two narrower, already-legislated obligations: AML/CTF "tranche 2" reporting
+  entities pulled into the Act for their AML/CTF-related activities from 1 July 2026
+  `[VERIFY — under audit]`, and automated-decision-making transparency (APP 1.7–1.9) commencing
+  10 December 2026 for every existing APP entity `[VERIFY — under audit]`. Posture regardless: act
+  as though the obligations already apply.
 - **Customer reframe:** solo founders are the proving ground that generates playbooks and reputation;
   **small businesses with no compliance capability are the larger market**. Work profile shifts
   toward questionnaires, data-flow discovery, gap assessment and policy drafting. Same discovery/

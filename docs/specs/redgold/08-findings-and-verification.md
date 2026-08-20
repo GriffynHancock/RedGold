@@ -126,7 +126,11 @@ sold to a client as a flaw:
 | Reflected input that is HTML-encoded | The encoding is the control working |
 | Time-based SQLi with inconsistent timing | Network latency mimics time-based responses |
 
-This table lives in `playbooks/_generic/false-positives.md` and grows via `/rg:harvest`.
+This table is specced to live in `playbooks/_generic/false-positives.md` and grow via `/rg:harvest`.
+**Not yet built:** `playbooks/_generic/` currently contains only `adversarial-framings.md`; the
+table above is the seed content for a file that does not exist on disk yet. Until it is created,
+treat this section — not a file path — as the authoritative table, and create the file (seeded from
+this table) before `rg-verify` is pointed at it in practice.
 
 ### 10.6 Confidence and coverage
 
