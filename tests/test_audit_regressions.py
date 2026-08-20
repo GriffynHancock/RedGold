@@ -247,7 +247,13 @@ class TestReportFailsClosed(unittest.TestCase):
         del record["title"]
         (self.root / "findings" / "p.json").write_text(json.dumps([record]), encoding="utf-8")
         buckets = report.classify([record], self.root)
-        self.assertIn(record, buckets["invalid"])
+        # Compared by id, not by identity: `classify` applies the environment cap on *copies*
+        # (RG-1 §6), so the record it buckets is not the object handed in. The rule under test is
+        # that a malformed record lands in `invalid` and nowhere else.
+        self.assertEqual([r["id"] for r in buckets["invalid"]], [record["id"]])
+        for name, bucket in buckets.items():
+            if name != "invalid":
+                self.assertNotIn(record["id"], [r.get("id") for r in bucket])
 
     def test_a_valid_verified_finding_still_reaches_the_body(self):
         # The fix must not swing to excluding everything.
@@ -341,7 +347,13 @@ class TestFrameworkCanRunItself(unittest.TestCase):
             proc = self._run_probe(root, "https://evil.example.com/")
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("outside the authorization boundary", proc.stderr)
-            self.assertFalse((root / "ledger" / "activity.jsonl").exists(),
+            # The invariant is "no plan row before the boundary check", not "no rows at all":
+            # since RG-2 §5 the guard records its own refusal here, and §5.2.4 requires exactly
+            # that -- an unlogged refusal on RedGold's sanctioned burst path is a gap in the
+            # reconciliation, not a virtue.
+            rows = [json.loads(line) for line
+                    in (root / "ledger" / "activity.jsonl").read_text().splitlines() if line.strip()]
+            self.assertEqual([r["event_type"] for r in rows], ["scope.deny"],
                              "must refuse BEFORE logging a plan or firing anything")
 
     def test_rate_probe_refuses_an_unauthorised_port(self):

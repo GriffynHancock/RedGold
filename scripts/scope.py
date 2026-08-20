@@ -94,6 +94,72 @@ MODE_DEFAULT_CEILING = {"posture": 1, "audit": 2, "redteam": 3}
 
 ENGAGEMENT_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
+# --------------------------------------------------------------------------------------------
+# `environment` (RG-1 §3.1) -- a scope fact, not an observation.
+#
+# An engagement that never asked "what environment am I in" reported a development stack on the
+# operator's own laptop as the client's production system: seven of eleven findings, including the
+# only critical, were artifacts of the box rather than facts about the client. The question is
+# answerable at scoping time from the client's own declaration, so it is a required key here and
+# a Gate 1 refusal when it is missing -- not something inferred later from what a scanner saw.
+#
+# `unknown` is deliberately **a legal value to type and an illegal value to proceed on**. Making
+# it unrepresentable would push an operator to guess `production` to clear the gate, which
+# manufactures a false client declaration. Recording `unknown` and being stopped is honest.
+# --------------------------------------------------------------------------------------------
+
+ENVIRONMENTS = ("production", "staging", "development", "ephemeral-preview")
+ENVIRONMENT_UNKNOWN = "unknown"
+ENVIRONMENT_VALUES = ENVIRONMENTS + (ENVIRONMENT_UNKNOWN,)
+
+
+def effective_environment(value: Any) -> str:
+    """The environment to *score* against. Anything unresolvable reads as `production`.
+
+    Fail-closed names a direction, not a value, and the direction is the one that does not reduce
+    what the client is told. `production` is the uncapped column, so an unknown environment can
+    never quietly cap a severity. Cited precedent rather than invented: SSVC System Exposure
+    1.0.1 assumes `Open` when the level cannot be determined.
+
+    Membership test then indexed read -- never `dict.get(value, default)`. A defaulting lookup is
+    how an unrecognised string silently becomes the most flattering rank, which is the exact shape
+    of the 2026-08-04 `"Critical!!"` incident.
+    """
+    if isinstance(value, str) and value in ENVIRONMENTS:
+        return value
+    return "production"
+
+
+def environment_refusal(value: Any) -> str | None:
+    """The Gate 1 refusal reason for this declaration, or None if it may proceed.
+
+    Absent, empty, `unknown` and unrecognised are four different mistakes and each gets its own
+    sentence: an operator who cannot tell which one they made fixes it by guessing.
+    """
+    vocabulary = ", ".join(ENVIRONMENTS)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return (
+            "ENVIRONMENT_UNDECLARED: scope.yaml declares no `environment`. Every finding this "
+            "engagement produces inherits it, and an engagement that never established which "
+            "environment it was testing reported a development stack as a client's production "
+            f"system. Add `environment:` to scope.yaml -- one of: {vocabulary}."
+        )
+    if not isinstance(value, str):
+        return f"ENVIRONMENT_UNDECLARED: scope.yaml's `environment` is not a string. Use one of: {vocabulary}."
+    if value == ENVIRONMENT_UNKNOWN:
+        return (
+            "ENVIRONMENT_UNDECLARED: scope.yaml declares `environment: unknown`. That is an "
+            "honest thing to record and not a thing to test on -- ask the client which "
+            f"environment these assets are, and record the answer: {vocabulary}."
+        )
+    if value not in ENVIRONMENTS:
+        return (
+            f"ENVIRONMENT_UNDECLARED: scope.yaml declares `environment: {value}`, which is not a "
+            f"recognised value. Use one of: {vocabulary}. Do not approximate -- the value picks "
+            "the severity cap every finding in this engagement is scored against."
+        )
+    return None
+
 
 @dataclass(frozen=True)
 class AssetEntry:
@@ -161,6 +227,9 @@ class Scope:
     crown_jewels: tuple[str, ...] = ()
     constraints: Constraints = field(default_factory=Constraints)
     notify_before_active: bool = True
+    # Recorded verbatim, including an unrecognised value: `environment_refusal()` at Gate 1 has to
+    # be able to name what was actually written. Empty string means the key was absent.
+    environment: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise back to the scope.yaml document shape. Round-trip stable."""
@@ -171,6 +240,10 @@ class Scope:
             "mode": self.mode,
             "ceiling": self.ceiling,
         }
+        if self.environment:
+            # Omitted when absent so a document that never had the key round-trips unchanged --
+            # writing `environment: ""` back would invent a declaration nobody made.
+            d["environment"] = self.environment
         if self.crown_jewels:
             d["crown_jewels"] = list(self.crown_jewels)
         d["in_scope"] = [e.to_dict() for e in self.in_scope]
@@ -335,6 +408,18 @@ def parse(document: Any) -> Scope:
             "A declared ceiling may lower a mode's default but never raise it (§6)."
         )
 
+    # §3.1: parse records the declaration and validates its *type*; membership is enforced at
+    # Gate 1 by `gate_cli.cmd_approve` (D-6), not here. A hard parse error would block
+    # `report.py`, `regen_status.py` and `baseline_scan.py` too -- including the report that
+    # would explain the refusal -- and a refusal nobody can read gets worked around.
+    environment = document.get("environment")
+    if environment is not None and not isinstance(environment, str):
+        raise ScopeError(
+            f"environment must be a string, got {type(environment).__name__}. "
+            f"One of: {', '.join(ENVIRONMENTS)}"
+        )
+    environment = (environment or "").strip()
+
     crown_jewels = document.get("crown_jewels", [])
     if not isinstance(crown_jewels, list) or not all(isinstance(x, str) for x in crown_jewels):
         raise ScopeError("crown_jewels must be a list of strings")
@@ -361,6 +446,7 @@ def parse(document: Any) -> Scope:
         crown_jewels=tuple(crown_jewels),
         constraints=_parse_constraints(document.get("constraints")),
         notify_before_active=notify_before_active,
+        environment=environment,
     )
 
 

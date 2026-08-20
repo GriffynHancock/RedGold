@@ -18,6 +18,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 import regen_status  # noqa: E402
+import report  # noqa: E402
 
 SCOPE = """engagement_id: regen-test
 client: {name: C, contact: c@example.invalid}
@@ -180,6 +181,68 @@ class TestCheckMode(Harness):
     def test_refuses_outside_an_engagement(self):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(regen_status.main(["--root", empty]), 1)
+
+
+class TestTheCoverageGapMatchesTheClientReport(Harness):
+    """S8. `regen_status.py` and `report.py` counted the coverage gap by opposite rules.
+
+    `report.py` allow-lists the *inapplicable* bucket and treats everything else as a gap -- the
+    disclosing direction. `regen_status.py` allow-listed the *gap* bucket, so anything it did not
+    recognise vanished. One typo or one future third `not_applicable_reason` and status.md -- the
+    file CLAUDE.md calls authoritative and the operator reads at every session start -- reported
+    zero unassessed services while the client report reported twelve.
+    """
+
+    def gap_record(self, **overrides) -> dict:
+        record = {"id": "F-001", "title": "12 checks never sent",
+                  "asset": "http://app.example.invalid:8025", "finding_class": "technical",
+                  "status": "SPECULATED", "severity": "info", "result": "not_applicable",
+                  "not_applicable_reason": "no_http_response", "checks_skipped": 12}
+        record.update(overrides)
+        return record
+
+    def untested_in_status(self) -> int:
+        text = self.generate()
+        for line in text.splitlines():
+            if "checks did NOT run" in line:
+                return int(line.split()[0])
+        return 0
+
+    def untested_in_report(self) -> int:
+        # Read the number off the client deliverable itself rather than re-deriving it. The whole
+        # defect was two derivations of one number, so a test that carries a third proves nothing.
+        (self.root / "deliverables").mkdir(exist_ok=True)
+        for line in report.render(self.root, 1).splitlines():
+            if "check(s) not performed" in line:
+                return int(line.split("--")[1].split()[0])
+        return 0
+
+    def test_a_recognised_reason_agrees(self):
+        self.write_findings([self.gap_record()])
+        self.assertEqual(self.untested_in_status(), 12)
+        self.assertEqual(self.untested_in_report(), 12)
+
+    def test_an_unrecognised_reason_does_not_vanish_from_status(self):
+        self.write_findings([self.gap_record(not_applicable_reason="connection_reset")])
+        self.assertEqual(self.untested_in_report(), 12)
+        self.assertEqual(self.untested_in_status(), 12)
+
+    def test_a_zero_checks_skipped_still_counts_as_one_gap(self):
+        self.write_findings([self.gap_record(checks_skipped=0)])
+        self.assertEqual(self.untested_in_report(), 1)
+        self.assertEqual(self.untested_in_status(), 1)
+
+    def test_a_boolean_checks_skipped_is_not_a_count(self):
+        # `True` is an `int` in Python. A JSON bool in this field is malformed input, not one
+        # check, and both readers must agree on that.
+        self.write_findings([self.gap_record(checks_skipped=True)])
+        self.assertEqual(self.untested_in_report(), 1)
+        self.assertEqual(self.untested_in_status(), 1)
+
+    def test_a_structurally_inapplicable_check_is_not_a_gap_in_either(self):
+        self.write_findings([self.gap_record(not_applicable_reason="scheme_inapplicable")])
+        self.assertEqual(self.untested_in_report(), 0)
+        self.assertEqual(self.untested_in_status(), 0)
 
 
 if __name__ == "__main__":

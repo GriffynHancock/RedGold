@@ -27,12 +27,20 @@ Then run the scaffolder:
   --signed-by "Jane Founder" --signed-date 2026-08-01 \
   --window-start 2026-08-05 --window-end 2026-08-19 \
   --mode audit --ceiling 2 \
+  --environment production \
   --in-scope 'WILDCARD:*.acme.example' \
   --in-scope 'SUPABASE_PROJECT:abcdefghijklmnop' \
   --out-of-scope 'URL:https://blog.acme.example|third-party WordPress' \
   --crown-jewel "user geolocation" \
   --burst-cap 10
 ```
+
+`--environment` is **required** and has no default: `production`, `staging`, `development`,
+`ephemeral-preview` or `unknown`. Ask the client which environment these assets are; do not infer
+it from a hostname. `unknown` is an honest thing to record and Gate 1 refuses to approve a plan on
+it — an engagement that never established this reported a development stack on the operator's own
+laptop as the client's production system, which produced seven bad findings including the only
+critical. Every finding inherits the value, and severity is capped against it (RG-1 §6).
 
 `--in-scope` is repeatable and takes `TYPE:pattern`. `--out-of-scope` additionally accepts
 `TYPE:pattern|note`. Run with `--help` for the full flag set.
@@ -50,6 +58,7 @@ destination — it authorises reading the code, never sending requests to the ho
 | The boundary does not parse | The document is round-tripped through the parser before anything is written. |
 | `ceiling` exceeds the mode's default | A declared ceiling may lower a mode's default, never raise it (§6). |
 | `redteam` without a named emergency contact | §6. |
+| No `--environment` | Required, no default. A fresh engagement must not be born missing the key Gate 1 demands. |
 | The engagement directory already exists | It may hold evidence and ledger history. `--force` only if you are certain. |
 
 A refused scaffold leaves nothing behind.

@@ -92,6 +92,31 @@ class TestTheOverrunIsDenied(unittest.TestCase):
         self.assertAllowed('curl -s https://api.example.invalid/formatter')
         self.assertAllowed('curl -s https://api.example.invalid/whilelist')
 
+    def test_wget_flags_are_not_denied_on_curl(self):
+        # `-i`, `-r` and `-m` were matched tool-blind. They are wget's input-file list, recursive
+        # mirror and mirror; on curl they are show-headers, byte-range and max-time -- three of
+        # the safest flags in the product, none of which loops over anything. The hook denied
+        # `curl -i https://host/health`, which is close to the single most ordinary command an
+        # operator types. A refusal that fires on healthy input gets the hook switched off, and a
+        # switched-off hook is every hand-rolled loop back again (§2.3).
+        self.assertAllowed('curl -i https://api.example.invalid/health')
+        self.assertAllowed('curl -r 0-1023 https://api.example.invalid/big.bin')
+        self.assertAllowed('curl -m 5 https://api.example.invalid/health')
+        self.assertAllowed('curl --include https://api.example.invalid/health')
+
+    def test_the_same_flags_are_still_denied_on_wget(self):
+        # The fix is to scope them to the tool whose flags they are, not to drop them: on wget
+        # each of these genuinely fans out over many URLs.
+        self.assertDenied('wget -i urls.txt')
+        self.assertDenied('wget --input-file=urls.txt')
+        self.assertDenied('wget -r https://api.example.invalid/')
+        self.assertDenied('wget -m https://api.example.invalid/')
+        self.assertDenied('wget --mirror https://api.example.invalid/')
+
+    def test_a_curl_config_file_of_urls_is_still_denied(self):
+        self.assertDenied('curl -K urls.txt')
+        self.assertDenied('curl --config urls.txt')
+
     # --- as a hook -------------------------------------------------------------------------
 
     def test_hook_emits_a_deny_decision(self):
@@ -135,6 +160,26 @@ class CanaryHarness(unittest.TestCase):
 
     def write_plan(self, plan: dict):
         (self.root / "ledger" / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    def add_activity_row(self, **row):
+        with (self.root / "ledger" / "activity.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+    def dispatcher_plan(self, url: str, method: str = "POST", cap: int = 1):
+        """What `rate_probe.sh` writes to activity.jsonl BEFORE it fires."""
+        self.add_activity_row(
+            ts="2026-08-04T20:21:40Z", event_type="rate_probe.plan", decision="allow",
+            gate_ref="G-004", tier=2, cap=cap,
+            target={"host": url, "operation": f"{method} {url}"},
+            reason=f"bounded burst, cap {cap}, sequential, stop at first 429/Retry-After")
+
+    def dispatcher_result(self, url: str, method: str = "POST", dispatched: int = 1, cap: int = 1):
+        """What `rate_probe.sh` writes AFTER the burst -- may never be written if it dies."""
+        self.add_activity_row(
+            ts="2026-08-04T20:21:45Z", event_type="rate_probe.result", decision="allow",
+            gate_ref="G-004", target={"host": url, "operation": f"{method} {url}"},
+            reason="cap reached", requests_dispatched=dispatched, cap=cap,
+            throttled=False, status_codes=["201"])
 
 
 class TestWriteWithoutCanaryIsDenied(CanaryHarness):
@@ -206,11 +251,115 @@ class TestPreApprovalPath(CanaryHarness):
         self.assertFalse(allow)
         self.assertIn("budget", reason)
 
+    def test_exhaustion_message_reports_dispatched_writes(self):
+        self.write_plan({"write_endpoints": [
+            {"method": "POST", "route_template": "/rest/v1/subscriptions", "max_writes": 2}]})
+        for _ in range(2):
+            self.add_cleanup_row(purpose="test-data", state="pending", method="POST",
+                                 route_template="/rest/v1/subscriptions",
+                                 operation="POST /rest/v1/subscriptions")
+        allow, reason = self.decide(
+            "curl -X POST https://api.example.invalid/rest/v1/subscriptions -d '{}'")
+        self.assertFalse(allow)
+        self.assertIn("2 of 2 dispatched", reason)
+
     def test_plan_covering_a_different_route_does_not_help(self):
         self.write_plan({"write_endpoints": [
             {"method": "POST", "route_template": "/rest/v1/notes", "max_writes": 5}]})
         self.assertFalse(self.decide(
             "curl -X POST https://api.example.invalid/rest/v1/subscriptions -d '{}'")[0])
+
+
+class TestUndispatchedWritesDoNotConsumeBudget(CanaryHarness):
+    """B-003. `cleanup.jsonl` is written BEFORE the write is made (CLAUDE.md rule 5), so a row
+    exists for writes that were then refused and never sent. Those must not consume the plan's
+    budget -- but ambiguity fails CLOSED: only a row positively marked as never dispatched is
+    exonerated, because a write that was sent and whose outcome was never recorded (crash,
+    timeout, killed process) must still count."""
+
+    ROUTE = "/rest/v1/subscriptions"
+    OPERATION = "POST /rest/v1/subscriptions"
+    CURL = "curl -X POST https://api.example.invalid/rest/v1/subscriptions -d '{}'"
+
+    def plan(self, max_writes=2):
+        self.write_plan({"write_endpoints": [
+            {"method": "POST", "route_template": self.ROUTE, "max_writes": max_writes}]})
+
+    def row(self, state):
+        self.add_cleanup_row(purpose="test", state=state, method="POST",
+                             route_template=self.ROUTE, operation=self.OPERATION)
+
+    def counted(self):
+        """Dispatched writes only -- the number that spends the plan's budget."""
+        return canary_check.writes_already_made(self.root, "POST", self.ROUTE, self.OPERATION)[0]
+
+    def test_the_counter_reports_dispatched_and_undispatched_separately(self):
+        self.row("denied_not_sent")
+        self.row("pending")
+        self.assertEqual(
+            canary_check.writes_already_made(self.root, "POST", self.ROUTE, self.OPERATION),
+            (1, 1))
+
+    def test_a_never_dispatched_row_does_not_consume_budget(self):
+        self.row("denied_not_sent")
+        self.assertEqual(self.counted(), 0)
+
+    def test_a_dispatched_row_does_consume_budget(self):
+        self.row("pending")
+        self.assertEqual(self.counted(), 1)
+
+    def test_a_row_with_no_state_still_consumes_budget(self):
+        # Fail closed: a write whose outcome was never recorded must not free up budget.
+        self.add_cleanup_row(purpose="test", method="POST", route_template=self.ROUTE,
+                             operation=self.OPERATION)
+        self.assertEqual(self.counted(), 1)
+
+    def test_a_row_with_an_unrecognised_state_still_consumes_budget(self):
+        self.row("who-knows")
+        self.assertEqual(self.counted(), 1)
+
+    def test_the_live_b003_shape_leaves_the_full_budget_available(self):
+        # Exactly the two rows in the prior engagement's ledger: two logged intents, zero
+        # requests ever dispatched, max_writes=2. The write must be PERMITTED.
+        self.plan(2)
+        self.row("denied_not_sent")
+        self.row("denied_not_sent")
+        allow, reason = self.decide(self.CURL)
+        self.assertTrue(allow, f"budget should be untouched, got: {reason}")
+
+    def test_two_dispatched_writes_exhaust_a_budget_of_two(self):
+        self.plan(2)
+        self.row("pending")
+        self.row("deleted")
+        allow, reason = self.decide(self.CURL)
+        self.assertFalse(allow)
+        self.assertIn("2 of 2 dispatched", reason)
+
+    def test_one_dispatched_and_one_undispatched_leaves_room(self):
+        self.plan(2)
+        self.row("denied_not_sent")
+        self.row("pending")
+        self.assertTrue(self.decide(self.CURL)[0])
+
+    def test_exhaustion_message_names_undispatched_rows_separately(self):
+        self.plan(1)
+        self.row("denied_not_sent")
+        self.row("pending")
+        allow, reason = self.decide(self.CURL)
+        self.assertFalse(allow)
+        self.assertIn("1 of 1 dispatched", reason)
+        self.assertIn("logged but never dispatched", reason)
+
+    def test_log_before_write_ordering_still_holds(self):
+        # No cleanup row at all and no plan pre-approval is still the original denial.
+        allow, reason = self.decide(self.CURL)
+        self.assertFalse(allow)
+        self.assertIn("no write authorisation", reason.lower())
+
+    def test_an_undispatched_canary_row_still_proves_nothing(self):
+        self.add_cleanup_row(purpose="canary", state="denied_not_sent", method="POST",
+                             route_template=self.ROUTE, operation=self.OPERATION)
+        self.assertFalse(self.decide(self.CURL)[0])
 
 
 class TestOperationIdentity(CanaryHarness):

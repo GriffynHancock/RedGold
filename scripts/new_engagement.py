@@ -107,6 +107,11 @@ def build_scope_document(args: argparse.Namespace, engagement_id: str) -> dict:
         },
         "mode": args.mode,
         "ceiling": args.ceiling,
+        # RG-1 §3.1. Required at scaffold time so that a fresh engagement is never born missing
+        # the key Gate 1 demands -- a framework that creates documents its own gate refuses
+        # teaches operators that the gate is noise. `unknown` is accepted here and refused at
+        # Gate 1: recording that nobody has said yet is honest, proceeding on it is not.
+        "environment": args.environment,
     }
     if args.emergency_contact:
         doc["authorization"]["emergency_contact"] = args.emergency_contact
@@ -226,6 +231,7 @@ def scaffold(args: argparse.Namespace) -> Path:
         "WINDOW_START": str(args.window_start),
         "WINDOW_END": str(args.window_end),
         "MODE": args.mode,
+        "ENVIRONMENT": boundary.environment,
         "CEILING": str(args.ceiling),
         "SCAFFOLD_DATE": date.today().isoformat(),
         "IN_SCOPE_SUMMARY": ", ".join(f"{e.asset_type}:{e.pattern}" for e in boundary.in_scope),
@@ -265,6 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--window-end", required=True)
     p.add_argument("--emergency-contact", default=None)
     p.add_argument("--mode", choices=scope_mod.MODES, default="audit")
+    p.add_argument("--environment", required=True, choices=scope_mod.ENVIRONMENT_VALUES,
+                   help="which environment these assets are (RG-1 §3.1). No default: an "
+                        "engagement that never established this reported a development stack as "
+                        "a client's production system. 'unknown' is accepted here and refused at "
+                        "Gate 1 -- ask the client, do not guess.")
     p.add_argument("--ceiling", type=int, default=2)
     p.add_argument("--in-scope", action="append", default=[], metavar="TYPE:pattern")
     p.add_argument("--out-of-scope", action="append", default=[], metavar="TYPE:pattern|note")

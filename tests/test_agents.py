@@ -7,7 +7,7 @@ A full phase runs end-to-end and the worker demonstrably executed."
 **The third clause is NOT covered here, and saying so is the point.** Running a full phase means
 dispatching real agents against a real target, which costs real tokens and needs an authorised
 engagement. What is covered: the roster's invariants, and the nesting denial. The end-to-end phase
-is exercised in the live Anjali run, not in this suite. Do not read a green suite as evidence that
+is exercised in the live prior-engagement run, not in this suite. Do not read a green suite as evidence that
 a phase has ever run.
 
 Most of these are **mutation tests**: they break a card on purpose and assert the validator

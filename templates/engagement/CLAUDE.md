@@ -13,6 +13,7 @@ The constitution for this engagement. Scaffolded by `/rg:new` on {{SCAFFOLD_DATE
 | Window | {{WINDOW_START}} to {{WINDOW_END}} |
 | Mode | `{{MODE}}` |
 | Blast-radius ceiling | {{CEILING}} |
+| Environment | `{{ENVIRONMENT}}` |
 
 **`scope.yaml` is the authorization boundary and the only thing the hooks enforce.** It is changed
 by written amendment, through `/rg:scope` — never by editing the file directly, and never because

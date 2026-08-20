@@ -34,6 +34,31 @@ TWO DESIGN DECISIONS WORTH KNOWING
 2. **Every failure path denies.** Any exception, unreadable scope, unparseable window or
    undeterminable host produces a deny. A control that cannot evaluate must not permit. This
    matters because a PreToolUse hook that *crashes* fails open, so the entire body is wrapped.
+
+DECISION LOGGING (RG-2 §5)
+--------------------------
+Every decision with a network destination appends one row to `ledger/activity.jsonl`, on allow and
+on deny alike, so the off-host egress log can be reconciled against what this guard decided (§9.9).
+A gateway block for traffic the guard *allowed* means the parser was wrong or the agent was
+manipulated; both are incidents, and neither is detectable without both halves of the join.
+
+Two rules govern that append, and breaking either makes the feature worse than nothing:
+
+- **The append happens outside `emit()`.** Logging an allow must never *become* an allow decision:
+  an explicit `permissionDecision: "allow"` would auto-approve the call and suppress the operator's
+  own permission prompt, turning a logging change into a silent privilege escalation.
+- **A failed append never fails the tool call.** Disk full or a read-only mount must not deny every
+  call for the rest of the engagement; a control that blocks legitimate work gets disabled, and then
+  nothing is logged at all. On failure the guard writes a `ledger.write_fail` marker to stderr and
+  proceeds with the original decision. `rg-reconcile` treats a `corr_id` gap as unattributed
+  traffic, so a lost row degrades the join rather than hiding it.
+
+And one caveat that belongs next to the code, not only in the spec:
+
+    A workload that has escaped its container can forge `ledger/activity.jsonl`, because it writes
+    it. This log is **evidence, not proof.** The gateway-side log is trustworthy because it is
+    written on a machine the workload has no principal on. Reconciliation detects an honest parser
+    failure reliably and a dishonest workload only imperfectly.
 """
 
 from __future__ import annotations
@@ -41,6 +66,7 @@ from __future__ import annotations
 import base64
 import binascii
 import datetime as _dt
+import hashlib
 import ipaddress
 import json
 import os
@@ -688,6 +714,338 @@ def evaluate(
 
 
 # --------------------------------------------------------------------------------------------
+# Decision logging (RG-2 §5)
+# --------------------------------------------------------------------------------------------
+
+ACTIVITY_LEDGER = "activity.jsonl"
+RESOLUTION_LEDGER = "resolution.jsonl"
+
+# `event_type` is derived from the reason prefix `evaluate()` writes, because the decision itself
+# carries only allow/deny. These two constants are the coupling; `tests/test_scope_guard.py` pins
+# them against the emitted string so a reword cannot silently reclassify undeterminable denials as
+# ordinary scope denials -- their rate over time is the best available metric for a degrading
+# parser (§5.1), and burying them inside `scope.deny` makes that invisible.
+UNDETERMINABLE_PREFIX = "DENIED (undeterminable target)"
+GUARD_ERROR_PREFIX = "DENIED (scope_guard could not evaluate this call)"
+
+# A command is capped at MAX_ANALYSABLE_COMMAND, but a ledger line should stay readable and a
+# JSONL row that is mostly one enormous string is a log nobody greps twice.
+MAX_OPERATION_CHARS = 2000
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+# `ledger/resolution.jsonl` is written by the setup agent on the control tier and does not exist
+# yet (RG-2 §4 builds it). Its schema is described in prose only -- "(hostname, A/AAAA, ts, ttl,
+# resolver)" -- so the reader below accepts the plausible spellings rather than guessing one and
+# silently reading nothing. A host with no record gets `resolved_ips: []`, never a live lookup.
+_RESOLUTION_HOST_KEYS = ("host", "hostname", "name", "qname")
+_RESOLUTION_IP_KEYS = ("ips", "addresses", "a", "aaaa", "ip", "address")
+
+
+def new_corr_id(now_utc: _dt.datetime | None = None) -> str:
+    """A ULID: 48-bit millisecond timestamp, 80 bits of randomness, Crockford base32.
+
+    Time-ordered, so a `corr_id` gap is visible as a gap; unique, so the fuzzy +/-5s join in §5.5
+    can be promoted to an exact one wherever the value is carried forward.
+    """
+    moment = now_utc or _dt.datetime.now(_dt.timezone.utc)
+    value = (int(moment.timestamp() * 1000) << 80) | int.from_bytes(os.urandom(10), "big")
+    chars = []
+    for _ in range(26):
+        chars.append(_CROCKFORD[value & 0x1F])
+        value >>= 5
+    return "".join(reversed(chars))
+
+
+def _iso_ms(moment: _dt.datetime) -> str:
+    return moment.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
+        f"{moment.microsecond // 1000:03d}Z"
+
+
+def append_ledger(root: Path, name: str, row: dict[str, Any]) -> None:
+    """Append one JSONL row with a single O_APPEND write.
+
+    `scope_cli.py` and `gate_cli.py` each carry their own `append_ledger`, and §5.2.3 asks for a
+    shared module. That refactor is deliberately not done here: those two files were under review
+    by another worker while this landed. This copy differs in one way that matters -- one
+    `os.write()` under O_APPEND, so two agents appending concurrently cannot interleave half-lines
+    into the log the whole reconciliation depends on.
+    """
+    path = root / "ledger" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = (json.dumps(row) + "\n").encode("utf-8")
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(handle, line)
+    finally:
+        os.close(handle)
+
+
+def load_resolution(root: Path) -> dict[str, list[str]]:
+    """host -> resolved IPs, from `ledger/resolution.jsonl`. Never a live lookup.
+
+    §5.1: a resolver inside the workload can be poisoned by the target, and a lookup inside the
+    guest is itself egress -- the guard would be generating the traffic it exists to account for.
+    Later rows win, so a re-resolution at amendment time supersedes the provisioning record.
+    """
+    path = root / "ledger" / RESOLUTION_LEDGER
+    if not path.exists():
+        return {}
+    table: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            # A malformed resolution ledger must not deny tool calls. The row is skipped and the
+            # affected host reads as unresolved, which reconciliation already handles.
+            continue
+        if not isinstance(row, dict):
+            continue
+        host = next((row[k] for k in _RESOLUTION_HOST_KEYS if isinstance(row.get(k), str)), None)
+        if not host:
+            continue
+        found: list[str] = []
+        for key in _RESOLUTION_IP_KEYS:
+            value = row.get(key)
+            if isinstance(value, str):
+                found.append(value)
+            elif isinstance(value, list):
+                found.extend(v for v in value if isinstance(v, str))
+        table[normalise_host(host)] = list(dict.fromkeys(found))
+    return table
+
+
+def load_asset_ids(root: Path) -> dict[str, str]:
+    """identifier -> asset_id, whatever the row's status.
+
+    Deliberately not `load_register`: that one returns CONFIRMED identifiers because it answers an
+    authorisation question. This answers a labelling one, and a denied call against a CANDIDATE is
+    exactly the row an operator most wants an asset id on.
+    """
+    path = root / "assets" / "register.jsonl"
+    if not path.exists():
+        return {}
+    ids: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        identifier, asset_id = row.get("identifier"), row.get("asset_id")
+        if isinstance(identifier, str) and isinstance(asset_id, str):
+            ids[normalise_host(identifier)] = asset_id
+    return ids
+
+
+def _scope_hash(root: Path) -> str | None:
+    """Same shape as `gate_cli.scope_hash_of` -- sha256 over the file's bytes."""
+    path = root / "scope.yaml"
+    if not path.is_file():
+        return None
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _ruleset_hash(root: Path) -> str | None:
+    """From `provision.json`, which proves which egress filter was live for this decision.
+
+    The control tier does not write that file yet (RG-2 §4), so this is null on every current
+    engagement. Null is the honest value: claiming a ruleset hash the guard cannot see would be
+    fabricating the one field whose whole purpose is proof.
+    """
+    path = root / "provision.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = data.get("ruleset_hash") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _operation(tool_name: str, tool_input: dict[str, Any]) -> str:
+    detail = ""
+    if isinstance(tool_input.get("command"), str):
+        detail = tool_input["command"]
+    elif isinstance(tool_input.get("url"), str):
+        detail = tool_input["url"]
+    text = f"{tool_name}: {detail}".strip() if detail else (tool_name or "unknown")
+    if len(text) > MAX_OPERATION_CHARS:
+        text = text[:MAX_OPERATION_CHARS] + f"...(truncated, {len(text)} chars)"
+    return text
+
+
+def build_activity_row(
+    payload: dict[str, Any],
+    decision: Decision,
+    *,
+    root: Path,
+    boundary: scope_mod.Scope | None,
+    confirmed: set[str],
+    operation: str | None = None,
+    tier: int | None = None,
+    now_utc: _dt.datetime | None = None,
+) -> dict[str, Any] | None:
+    """The §5.1 row, or None when there is nothing worth recording.
+
+    Nothing worth recording means exactly one case: an allowed call with no network destination at
+    all (`ls`, or a framework script that does its own boundary check). A row with no host is a row
+    with no join key, and the only consumer of this file is a join. **Denials are always recorded**,
+    including the ones with no parseable target -- that is the interesting half.
+    """
+    now = now_utc or _dt.datetime.now(_dt.timezone.utc)
+    tool_name = payload.get("tool_name") or ""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+
+    try:
+        targets = sorted(extract_hosts(tool_name, tool_input), key=lambda t: (t[0], t[1] or 0))
+    except Exception:  # noqa: BLE001 -- re-parsing for the label must never affect the decision
+        targets = []
+
+    # One URL yields the same host twice: once with its scheme's port from URL_RE and once
+    # portless from the bare-host pass. `evaluate()` is unaffected -- both entries authorise
+    # identically -- but a row whose port reads `null` for `https://host/` would be unjoinable
+    # against a gateway log that only ever sees a port.
+    ports_by_host: dict[str, set[int | None]] = {}
+    for host, port in targets:
+        ports_by_host.setdefault(host, set()).add(port)
+    targets = [(h, p) for h, p in targets if p is not None or len(ports_by_host[h]) == 1]
+
+    if decision.allow and not targets:
+        return None
+
+    reason = decision.reason or ""
+    if decision.allow:
+        event_type = "scope.allow"
+    elif reason.startswith(UNDETERMINABLE_PREFIX):
+        event_type = "scope.undeterminable"
+    else:
+        event_type = "scope.deny"
+
+    if tier is None:
+        command = tool_input.get("command")
+        tier = classify_tier(command) if tool_name == "Bash" and isinstance(command, str) else 1
+
+    resolution = load_resolution(root)
+    resolved: list[str] = []
+    missing = False
+    for host, _port in targets:
+        ips = resolution.get(host)
+        if ips:
+            resolved.extend(ip for ip in ips if ip not in resolved)
+        else:
+            missing = True
+    if not targets:
+        status = "unresolved"
+    elif not missing:
+        status = "resolved"
+    elif resolved:
+        status = "partial"
+    else:
+        status = "unresolved"
+
+    # §5.5's carve-out: a tier 0-1 probe against an in-boundary host that is not yet CONFIRMED.
+    # An allow can only reach an unconfirmed host through that path, so this is not a guess.
+    probe = decision.allow and any(host not in confirmed for host, _ in targets)
+    if reason.startswith(GUARD_ERROR_PREFIX):
+        reason_code = "guard_error"
+    elif probe:
+        reason_code = "attribution_probe"
+    elif status != "resolved":
+        reason_code = "unresolved"
+    else:
+        reason_code = None
+
+    primary_host, primary_port = targets[0] if targets else (None, None)
+    asset_ids = load_asset_ids(root)
+
+    return {
+        "ts": _iso_ms(now),
+        "engagement_id": boundary.engagement_id if boundary is not None else None,
+        "event_type": event_type,
+        "actor": {
+            # The PreToolUse payload names neither the agent nor the model, so these are stamped
+            # from the environment when the harness sets it and left null otherwise. A guessed
+            # agent name would be a fabricated attribution in an incident record.
+            "agent": os.environ.get("RG_AGENT"),
+            "model": os.environ.get("RG_MODEL"),
+            "session": payload.get("session_id"),
+        },
+        "target": {
+            "asset_id": asset_ids.get(primary_host) if primary_host else None,
+            "host": primary_host,
+            "port": primary_port,
+            "resolved_ips": resolved,
+            # §5.1 assumes one destination per decision; one command can name several. The primary
+            # is the first in sort order and the rest are listed here rather than dropped, because
+            # a dropped host is a gateway row nothing on this side can be joined to.
+            "additional_hosts": [f"{h}:{p}" if p is not None else h for h, p in targets[1:]],
+            # `resolved_ips` alone cannot distinguish "no record" from "record with no addresses",
+            # and with several hosts it cannot show a partial stamp at all. §5.1's `reason_code:
+            # "unresolved"` is preserved below, but it collides with §5.3's `attribution_probe`,
+            # so the join-integrity signal also lives here where nothing can displace it.
+            "resolution": status,
+            "operation": operation or _operation(tool_name, tool_input),
+        },
+        "decision": "allow" if decision.allow else "deny",
+        "reason": reason,
+        "reason_code": reason_code,
+        "purpose": "attribution" if probe else None,
+        "tier": tier,
+        # The hook payload carries no gate reference and the guard does not read `gates.jsonl`
+        # (§9.3.2 plan checking is unbuilt). Null rather than invented.
+        "gate_ref": None,
+        "scope_hash": _scope_hash(root),
+        "ruleset_hash": _ruleset_hash(root),
+        "corr_id": new_corr_id(now),
+        "severity": "info" if decision.allow else "high",
+    }
+
+
+def record_decision(
+    root: Path | None,
+    payload: dict[str, Any],
+    decision: Decision,
+    *,
+    boundary: scope_mod.Scope | None = None,
+    confirmed: set[str] | None = None,
+    operation: str | None = None,
+    tier: int | None = None,
+) -> None:
+    """Append the decision row. Never raises, never alters the decision.
+
+    Call this between `evaluate()` and `emit()` -- never inside `emit()`, whose allow branch must
+    stay silent (§5.2.1).
+    """
+    try:
+        if root is None:
+            raise scope_mod.ScopeError("no engagement root; nowhere to write the decision row")
+        row = build_activity_row(
+            payload, decision, root=root, boundary=boundary,
+            confirmed=confirmed or set(), operation=operation, tier=tier,
+        )
+        if row is not None:
+            append_ledger(root, ACTIVITY_LEDGER, row)
+    except Exception as exc:  # noqa: BLE001 -- deliberately total; see the module docstring
+        print(
+            f"ledger.write_fail: {type(exc).__name__}: {exc}. The decision is unchanged and this "
+            "call was NOT blocked by the logging failure; rg-reconcile will see the corr_id gap "
+            "and treat the traffic as unattributed.",
+            file=sys.stderr,
+        )
+
+
+# --------------------------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------------------------
 
@@ -713,12 +1071,15 @@ def check_url(root: Path, url: str, tier: int) -> tuple[bool, str]:
     confirmed = load_register(root)
     payload = {"tool_name": "WebFetch", "tool_input": {"url": url}}
     decision = evaluate(payload, boundary, confirmed, _dt.datetime.now(_dt.timezone.utc))
-    if not decision.allow:
-        return False, decision.reason
-    if tier > boundary.ceiling:
-        return False, (f"DENIED (ceiling): tier {tier} exceeds the engagement ceiling "
-                       f"{boundary.ceiling}")
-    return True, ""
+    if decision.allow and tier > boundary.ceiling:
+        decision = Decision.deny(f"DENIED (ceiling): tier {tier} exceeds the engagement ceiling "
+                                 f"{boundary.ceiling}")
+    # §5.2.4: rate_probe.sh -- RedGold's own sanctioned burst path -- reaches the network through
+    # here. Unlogged, every burst it fires shows up on the gateway as unattributed traffic: a false
+    # positive that trains the operator to dismiss the alarm.
+    record_decision(root, payload, decision, boundary=boundary, confirmed=confirmed,
+                    operation=f"check_url: {url}", tier=tier)
+    return (True, "") if decision.allow else (False, decision.reason)
 
 
 def main() -> int:
@@ -739,9 +1100,14 @@ def main() -> int:
         return 0
 
     # The entire body is wrapped: an unhandled exception in a PreToolUse hook fails OPEN.
+    payload: dict[str, Any] = {}
+    root: Path | None = None
+    boundary: scope_mod.Scope | None = None
+    confirmed: set[str] = set()
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
+            payload = {}
             raise ValueError("hook payload is not a JSON object")
         root = find_engagement_root(payload)
         boundary = scope_mod.load(root / "scope.yaml")
@@ -749,10 +1115,13 @@ def main() -> int:
         decision = evaluate(payload, boundary, confirmed, _dt.datetime.now(_dt.timezone.utc))
     except Exception as exc:  # noqa: BLE001 -- deliberately total
         decision = Decision.deny(
-            f"DENIED (scope_guard could not evaluate this call): {type(exc).__name__}: {exc}. "
+            f"{GUARD_ERROR_PREFIX}: {type(exc).__name__}: {exc}. "
             "A control that cannot evaluate must not permit. Fix the engagement's scope "
             "configuration before continuing."
         )
+    # Between evaluate() and emit(), never inside it: emit()'s allow branch must stay silent, or
+    # the guard starts granting the permission it exists to subtract (§5.2.1).
+    record_decision(root, payload, decision, boundary=boundary, confirmed=confirmed)
     emit(decision)
     return 0
 

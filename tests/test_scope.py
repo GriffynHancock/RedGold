@@ -152,6 +152,76 @@ class TestRejectsMalformed(unittest.TestCase):
         self._expect_rejected(self.base.replace("  contact: founder@example.invalid\n", ""), "contact")
 
 
+class TestEnvironment(unittest.TestCase):
+    """RG-1 §3.1: `environment` is a scope fact, required, from a closed vocabulary.
+
+    It is deliberately **not** a parse-time hard failure (D-6). `ScopeError` is DENY-by-contract
+    and `scope.load()` is called by `baseline_scan`, `report`, `regen_status` and both gate
+    commands -- so refusing at parse time would block the very report that explains the refusal.
+    Parse records the declaration; Gate 1 is where it binds.
+    """
+
+    def setUp(self):
+        self.base = FIXTURE.read_text(encoding="utf-8")
+
+    def test_the_fixture_declares_an_environment(self):
+        self.assertIn(scope.load(FIXTURE).environment, scope.ENVIRONMENTS)
+
+    def test_a_declared_environment_round_trips(self):
+        first = scope.load(FIXTURE)
+        self.assertEqual(scope.loads(first.dumps()).environment, first.environment)
+        self.assertEqual(first.to_dict()["environment"], first.environment)
+
+    def test_an_absent_environment_still_parses(self):
+        text = "\n".join(l for l in self.base.splitlines()
+                         if not l.startswith("environment:"))
+        self.assertEqual(scope.loads(text).environment, "")
+
+    def test_an_unrecognised_environment_still_parses_so_gate_1_can_name_it(self):
+        text = self.base.replace("environment: production", "environment: staging-ish")
+        self.assertEqual(scope.loads(text).environment, "staging-ish")
+
+    def test_a_non_string_environment_is_malformed(self):
+        text = self.base.replace("environment: production", "environment: [a, b]")
+        with self.assertRaises(scope.ScopeError):
+            scope.loads(text)
+
+    # --- the refusal, and what it refuses ----------------------------------------------------
+
+    def test_every_unusable_declaration_is_refused(self):
+        for value in ("", "unknown", "staging-ish", "PRODUCTION!!", "prod"):
+            with self.subTest(value=value):
+                self.assertIsNotNone(scope.environment_refusal(value))
+
+    def test_every_usable_declaration_is_accepted(self):
+        for value in scope.ENVIRONMENTS:
+            with self.subTest(value=value):
+                self.assertIsNone(scope.environment_refusal(value))
+
+    def test_unknown_is_a_legal_value_to_type_and_an_illegal_one_to_proceed_on(self):
+        # Making `unknown` unrepresentable would push an operator to guess `production` to clear
+        # the gate, which manufactures a false client declaration. Recording it and being stopped
+        # is honest; guessing is not.
+        text = self.base.replace("environment: production", "environment: unknown")
+        self.assertEqual(scope.loads(text).environment, "unknown")
+        self.assertIsNotNone(scope.environment_refusal("unknown"))
+
+    # --- fail closed, in the direction that does not reduce disclosure -----------------------
+
+    def test_an_unresolvable_environment_reads_as_production_for_scoring(self):
+        # SSVC System Exposure 1.0.1's precedent: assume the exposed value when the level cannot
+        # be determined. `production` is uncapped, so an unknown environment can never quietly
+        # cap a severity -- the flattering direction is the one that is closed off.
+        for value in ("", "unknown", "banana", None, "Staging"):
+            with self.subTest(value=value):
+                self.assertEqual(scope.effective_environment(value), "production")
+
+    def test_a_declared_environment_is_taken_at_its_word(self):
+        for value in scope.ENVIRONMENTS:
+            with self.subTest(value=value):
+                self.assertEqual(scope.effective_environment(value), value)
+
+
 class TestFailureIsNotPermission(unittest.TestCase):
     """A boundary that cannot be loaded must raise, never return an empty permissive scope."""
 

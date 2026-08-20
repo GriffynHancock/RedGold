@@ -44,7 +44,8 @@ welcome and ignored by this check, but the five required ones are load-bearing.
 
 `purpose` must be the literal string `"canary"` for a proving row (any other value, or its
 absence, means the row cannot authorise anything -- see `writes_already_made()`, which counts
-every *non*-canary row against a plan's `max_writes` budget).
+*non*-canary rows against a plan's `max_writes` budget, except those whose `state` positively
+records that the request was never dispatched).
 
 `state` must reach `"deleted"`. `"pending"` (write made, delete not yet attempted or not yet
 confirmed) and `"orphaned"` (delete attempted and failed -- what `cleanup_gate.py` blocks session
@@ -83,6 +84,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import scope_guard  # noqa: E402
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# States that mean "this row was logged before an attempt that never left the machine" -- the
+# guard refused it, and that refusal is itself recorded. Anything else, including an absent,
+# empty or unrecognised state, counts as a write that may have been made. See
+# `writes_already_made()` for why the ambiguity resolves that way.
+NEVER_DISPATCHED_STATES = frozenset({"denied_not_sent"})
 
 # Path segments that are identifiers rather than route structure.
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
@@ -202,16 +209,41 @@ def canary_proven(root: Path, method: str, route: str, operation: str) -> bool:
     return False
 
 
-def writes_already_made(root: Path, method: str, route: str, operation: str) -> int:
-    count = 0
+def writes_already_made(root: Path, method: str, route: str, operation: str) -> tuple[int, int]:
+    """`(dispatched, logged_but_never_dispatched)` for this operation.
+
+    A cleanup row is written **before** the write is attempted (engagement rule 5: the audit
+    trail must exist before the action). So a row also exists for a write that was then refused
+    and never sent -- and counting those as spent budget let a *denied* attempt consume the very
+    quota it was denied by. That is B-003: two refused attempts exhausted a budget of two while
+    zero requests had ever reached the target.
+
+    The correction is deliberately asymmetric, because the two errors are not equally bad.
+    Under-counting means more writes reach a client's live data than they authorised -- the
+    incident this whole module exists for. Over-counting only blocks a test, loudly, with a
+    message the operator can act on. So ambiguity fails CLOSED: a row counts as dispatched
+    unless its `state` **positively** says the request never left. A crashed, timed-out or
+    killed worker leaves a row whose outcome was never written back; that row still counts,
+    which is exactly what we want.
+
+    `NEVER_DISPATCHED_STATES` is therefore an allow-list of states that mean "the guard itself
+    refused this before dispatch", not a deny-list of states that mean "made". Only `state` is
+    consulted -- never the free-text `outcome`/`note` prose, which is unstructured and not a
+    control surface. Extending this set is a deliberate decision, never a convenience.
+    """
+    dispatched = 0
+    undispatched = 0
     for row in read_jsonl(root / "ledger" / "cleanup.jsonl"):
         if row.get("purpose") == "canary":
             continue
         if (str(row.get("method", "")).upper() == method
                 and row.get("route_template") == route
                 and row.get("operation") == operation):
-            count += 1
-    return count
+            if str(row.get("state", "")).strip().lower() in NEVER_DISPATCHED_STATES:
+                undispatched += 1
+            else:
+                dispatched += 1
+    return dispatched, undispatched
 
 
 def plan_preapproval(root: Path, method: str, route: str, operation: str) -> tuple[bool, str]:
@@ -237,10 +269,19 @@ def plan_preapproval(root: Path, method: str, route: str, operation: str) -> tup
         max_writes = entry.get("max_writes")
         if not isinstance(max_writes, int) or max_writes < 1:
             return False, (f"plan entry for {method} {route} has no usable max_writes budget")
-        made = writes_already_made(root, method, route, operation)
+        made, undispatched = writes_already_made(root, method, route, operation)
         if made >= max_writes:
-            return False, (f"the plan's write budget for {method} {route} is exhausted "
-                           f"({made} of {max_writes} already made)")
+            reason = (f"the plan's write budget for {method} {route} is exhausted "
+                      f"({made} of {max_writes} dispatched)")
+            if undispatched:
+                # B-003: do not let the next operator read a pile of logged rows as spent
+                # budget. Say which rows actually cost something and which did not.
+                reason += (f"; a further {undispatched} row(s) are logged but never dispatched "
+                           f"(state in {sorted(NEVER_DISPATCHED_STATES)}) and do not consume "
+                           "budget")
+            reason += (". Only rows positively marked as never dispatched are exonerated -- a "
+                       "row with a missing or unrecognised state counts as a write made.")
+            return False, reason
         return True, ""
     return False, f"the approved plan does not name {method} {route} as a write endpoint"
 

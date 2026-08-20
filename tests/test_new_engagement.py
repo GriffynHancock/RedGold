@@ -39,6 +39,7 @@ def base_args(root: str, auth_doc: str, **overrides) -> list[str]:
         "--window-start": "2020-01-01",
         "--window-end": "2099-12-31",
         "--python": PYTHON,
+        "--environment": "production",
         "--no-git": None,
     }
     args.update(overrides)
@@ -208,6 +209,42 @@ class TestHooksFireEndToEnd(ScaffoldHarness):
         self.scaffold()
         _, out = self.run_generated_hook(self.bash_payload("curl -s https://evil.example.com/"))
         self.assertIn("acme-2026-08", out)
+
+
+class TestEnvironmentIsScaffolded(ScaffoldHarness):
+    """RG-1 §3.1: a fresh engagement must not be born without the key Gate 1 requires.
+
+    Making a key required breaks every document that lacks it. The scaffolder is the one producer
+    of new documents, so if it does not write the key, every engagement it creates is refused at
+    Gate 1 for a defect the framework itself introduced.
+    """
+
+    def test_the_scaffolded_scope_carries_the_declared_environment(self):
+        self.assertEqual(self.scaffold(**{"--environment": "staging"}), 0)
+        sys.path.insert(0, str(REPO / "scripts"))
+        import scope as scope_mod
+
+        boundary = scope_mod.load(self.engagement / "scope.yaml")
+        self.assertEqual(boundary.environment, "staging")
+        self.assertIsNone(scope_mod.environment_refusal(boundary.environment))
+
+    def test_scaffolding_without_an_environment_is_refused(self):
+        args = [a for a in base_args(str(self.root), str(self.auth_doc))]
+        i = args.index("--environment")
+        del args[i:i + 2]
+        with self.assertRaises(SystemExit):
+            new_engagement.main(args)
+
+    def test_unknown_scaffolds_but_does_not_clear_gate_1(self):
+        # The operator may honestly record that nobody has said yet. What they may not do is
+        # proceed on it -- so the document is written and Gate 1 is where it stops.
+        self.assertEqual(self.scaffold(**{"--environment": "unknown"}), 0)
+        sys.path.insert(0, str(REPO / "scripts"))
+        import scope as scope_mod
+
+        boundary = scope_mod.load(self.engagement / "scope.yaml")
+        self.assertEqual(boundary.environment, "unknown")
+        self.assertIsNotNone(scope_mod.environment_refusal(boundary.environment))
 
 
 class TestRefusals(ScaffoldHarness):

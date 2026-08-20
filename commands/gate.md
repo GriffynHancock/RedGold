@@ -41,13 +41,29 @@ Writes `ledger/plan.json`. Refuses if:
   `/rg:scope promote <identifier> --confirm`;
 - `--max-tier` exceeds the engagement ceiling declared in `scope.yaml`.
 
-`--write-endpoint` syntax: `METHOD:/route/template[:operation][:max_writes]`. `route_template`
-must match what `canary_check.py`'s `normalise_route()` would produce for the actual URL (path
-parameters folded to `{id}`). `operation` is optional -- omit it to cover the whole route; for
-GraphQL name the mutation explicitly. `max_writes` defaults to `1` if omitted. Examples:
+`--write-endpoint` syntax: `METHOD:/route/template[:label][:max_writes]`. Fields after the route
+may be named -- `label=NAME`, `max=N`, `op=NAME` -- in any order; positionally, a bare integer is
+`max_writes` (default `1`) and any other bare value is the `label`.
 
-- `POST:/rest/v1/email_subscription:10` -- up to 10 writes to that route, any operation
-- `POST:/graphql:createComment:5` -- up to 5 `createComment` mutations specifically
+`route_template` is folded through `canary_check.py`'s `normalise_route()` for you, so a literal
+path id (`/api/notes/42`) is stored as `/api/notes/{id}` and will still match.
+
+`label` is a human-readable flow name (`signup`, `password-reset`). It is recorded in the plan for
+the operator's benefit and **is not** what the checker matches on.
+
+`operation` is a machine identifier and is derived, not typed: for a plain REST route it is always
+`"METHOD /route/template"`, which is exactly what `resolve_operation()` computes for an
+intercepted request. Passing `op=` on a REST route is refused, because anything other than that
+string could never match (this was blocker B-002: a plan entry with `operation: "signup"` denied
+the very write it was meant to authorise). For a **GraphQL** route `op=` is required and becomes
+the operation -- one route serves many mutations, and an entry covering the whole `/graphql` route
+would pre-approve `deleteAccount` along with `createComment`.
+
+Examples:
+
+- `POST:/rest/v1/email_subscription:10` -- up to 10 writes to that route
+- `POST:/members/api/send-magic-link/:signup:2` -- 2 writes, labelled `signup` for the operator
+- `POST:/graphql:op=createComment:max=5` -- up to 5 `createComment` mutations specifically
 
 ### `show` — print the current plan and its approval state
 
@@ -69,6 +85,19 @@ Appends a `gate.approve` row to `ledger/gates.jsonl` with a generated id (`G-001
 bytes). Refuses if no plan exists. **Editing the plan or amending scope.yaml after approval voids
 it** (§9.7) -- `gate_cli.py show` and `gate_cli.py validate --gate-ref G-00N` will report it as
 invalid, and `rate_probe.sh --gate-ref G-00N` will refuse to fire.
+
+**Also refuses when `scope.yaml` declares no usable `environment`** (`ENVIRONMENT_UNDECLARED`,
+RG-1 §3.1). Absent, empty, `unknown` and unrecognised are all refused; `production`, `staging`,
+`development` and `ephemeral-preview` proceed. The value is recorded on the approval row. Ask the
+client — do not infer it from a hostname, and do not guess `production` to clear the gate, because
+that manufactures a client declaration nobody made. Every finding inherits the value and severity
+is capped against it (RG-1 §6).
+
+This gate checks the **declaration** only. Whether the asset later contradicts it — a test-mode
+payment key in a response, a mail catcher answering on a port — cannot be known here: no request
+has been made yet (§9.7). That check runs at finding creation and report assembly, raises a
+`ENVIRONMENT_DISCREPANCY` blocker, and holds the affected findings out of the report body until
+`gate_cli.py resolve` records which side was wrong.
 
 ### `blockers` — list unresolved Gate 2 deviations
 

@@ -34,7 +34,7 @@ class TestRedaction(unittest.TestCase):
 
     def test_resend_key(self):
         out = self.assertRemoved(
-            'anjali.resendApiKey = "re_AbCdEf0123456789AbCdEf0123456789"',
+            '<app>.resendApiKey = "re_AbCdEf0123456789AbCdEf0123456789"',
             "re_AbCdEf0123456789AbCdEf0123456789", "resend")
         # The class survives so the finding is still reportable.
         self.assertIn("re_", out)

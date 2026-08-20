@@ -47,6 +47,24 @@ in_scope:
 constraints: {no_destructive: true}
 """
 
+SCOPE_MULTI_PORT_HOST = """engagement_id: promo-multiport-test
+client: {name: C, contact: c@example.invalid}
+authorization:
+  document: ../a.pdf
+  signed_by: S
+  signed_date: 2020-01-01
+  window_start: 2020-01-01
+  window_end: 2099-12-31
+mode: audit
+ceiling: 2
+in_scope:
+  - {asset_type: URL, pattern: "http://127.0.0.1"}
+  - {asset_type: URL, pattern: "http://127.0.0.1:2368"}
+  - {asset_type: URL, pattern: "http://127.0.0.1:3306"}
+  - {asset_type: URL, pattern: "http://127.0.0.1:6379"}
+constraints: {no_destructive: true}
+"""
+
 
 class Harness(unittest.TestCase):
     def setUp(self):
@@ -274,6 +292,124 @@ class TestAmendment(Harness):
         self.run_cli("amend", "--add", "WILDCARD:*.other.example", "--reason", "signed amendment")
         code, _, _ = self.run_cli("promote", "api.other.example", "--confirm")
         self.assertEqual(code, 0)
+
+
+class MultiPortHarness(Harness):
+    """One hostname carrying several distinct in-scope services, each on its own port.
+
+    This is the shape a real engagement hit: seven services behind one host, each named as its
+    own in_scope entry. Each is a separate asset and must get its own row.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.root / "scope.yaml").write_text(SCOPE_MULTI_PORT_HOST, encoding="utf-8")
+        (self.root / "assets").mkdir()
+        (self.root / "ledger").mkdir()
+
+    def add(self, identifier: str, **kw) -> tuple[int, str, str]:
+        return self.run_cli("add-candidate", identifier,
+                            "--signal", "TLS_SAN:localtest.example@manual",
+                            "--signal", "CONTENT_FP:matches-build-hash@manual",
+                            *kw.pop("extra", ()))
+
+
+class TestCandidateDedupIsPerHostAndPort(MultiPortHarness):
+    def test_two_ports_on_one_host_are_two_separate_candidates(self):
+        code_a, _, err_a = self.add("http://127.0.0.1:2368")
+        code_b, _, err_b = self.add("http://127.0.0.1:3306")
+        self.assertEqual(code_a, 0, err_a)
+        self.assertEqual(code_b, 0, err_b)
+
+        rows = self.candidates()
+        self.assertEqual(len(rows), 2, rows)
+        self.assertEqual([r["identifier"] for r in rows], ["127.0.0.1", "127.0.0.1"])
+        self.assertEqual(sorted(r["port"] for r in rows), [2368, 3306])
+        self.assertEqual(len({r["asset_id"] for r in rows}), 2)
+        # Each must bind to the boundary entry that actually names its port.
+        self.assertEqual({r["port"]: r["matched_boundary_entry"] for r in rows},
+                         {2368: "URL:http://127.0.0.1:2368", 3306: "URL:http://127.0.0.1:3306"})
+
+    def test_all_seven_services_on_one_host_can_be_filed(self):
+        ports = [2368, 3306, 6379]
+        for port in ports:
+            code, _, err = self.add(f"http://127.0.0.1:{port}")
+            self.assertEqual(code, 0, err)
+        code, _, err = self.add("127.0.0.1")            # the bare-host / port-80 service
+        self.assertEqual(code, 0, err)
+        rows = self.candidates()
+        self.assertEqual(len(rows), 4, rows)
+        self.assertEqual(sorted(r["port"] for r in rows if r["port"]), ports)
+        self.assertEqual(len({r["asset_id"] for r in rows}), 4)
+
+    def test_same_host_and_same_port_twice_is_still_refused(self):
+        self.assertEqual(self.add("http://127.0.0.1:2368")[0], 0)
+        code, _, err = self.add("http://127.0.0.1:2368")
+        self.assertEqual(code, 1)
+        self.assertIn("2368", err)
+        self.assertEqual(len(self.candidates()), 1)
+
+    def test_bare_host_with_no_port_twice_is_still_refused(self):
+        self.assertEqual(self.add("127.0.0.1")[0], 0)
+        code, _, err = self.add("127.0.0.1")
+        self.assertEqual(code, 1)
+        self.assertIn("127.0.0.1", err)
+        self.assertEqual(len(self.candidates()), 1)
+
+    def test_a_host_and_port_already_CONFIRMED_is_refused_too(self):
+        self.assertEqual(self.add("http://127.0.0.1:2368")[0], 0)
+        self.assertEqual(self.run_cli("promote", "http://127.0.0.1:2368", "--confirm")[0], 0)
+        code, _, err = self.add("http://127.0.0.1:2368")
+        self.assertEqual(code, 1)
+        self.assertIn("register", err)
+
+
+class TestPromoteIsPerHostAndPort(MultiPortHarness):
+    def test_promote_picks_the_candidate_on_the_named_port(self):
+        self.add("http://127.0.0.1:2368")
+        self.add("http://127.0.0.1:3306")
+        code, out, err = self.run_cli("promote", "http://127.0.0.1:3306", "--confirm")
+        self.assertEqual(code, 0, err)
+        register = self.register()
+        self.assertEqual(len(register), 1)
+        self.assertEqual(register[0]["port"], 3306)
+        self.assertEqual(register[0]["matched_boundary_entry"], "URL:http://127.0.0.1:3306")
+
+    def test_promoting_one_port_leaves_the_other_ports_queued(self):
+        self.add("http://127.0.0.1:2368")
+        self.add("http://127.0.0.1:3306")
+        self.add("http://127.0.0.1:6379")
+        self.assertEqual(self.run_cli("promote", "http://127.0.0.1:3306", "--confirm")[0], 0)
+        remaining = self.candidates()
+        self.assertEqual(sorted(r["port"] for r in remaining), [2368, 6379])
+
+    def test_promoting_a_port_that_was_never_filed_is_refused(self):
+        self.add("http://127.0.0.1:2368")
+        code, _, err = self.run_cli("promote", "http://127.0.0.1:6379", "--confirm")
+        self.assertEqual(code, 1)
+        self.assertIn("6379", err)
+        self.assertEqual(self.register(), [])
+        self.assertEqual(len(self.candidates()), 1)
+
+    def test_bare_host_promote_is_refused_when_the_host_is_ambiguous(self):
+        self.add("http://127.0.0.1:2368")
+        self.add("http://127.0.0.1:3306")
+        code, _, err = self.run_cli("promote", "127.0.0.1", "--confirm")
+        self.assertEqual(code, 1)
+        self.assertIn("2368", err)
+        self.assertIn("3306", err)
+        self.assertEqual(self.register(), [])
+        self.assertEqual(len(self.candidates()), 2)
+
+    def test_bare_host_promote_still_works_when_there_is_exactly_one_candidate(self):
+        # The documented convenience: re-typing `promote` without the port must not drop a port
+        # the in_scope entry named specifically.
+        self.add("http://127.0.0.1:2368")
+        code, _, err = self.run_cli("promote", "127.0.0.1", "--confirm")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.register()[0]["port"], 2368)
 
 
 class TestShow(Harness):

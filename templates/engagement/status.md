@@ -19,6 +19,7 @@
 | | |
 |---|---|
 | Mode | `{{MODE}}`, ceiling {{CEILING}} |
+| Environment | `{{ENVIRONMENT}}` -- every finding inherits it, and severity is capped against it (RG-1 §6) |
 | Window | {{WINDOW_START}} to {{WINDOW_END}} |
 | In scope | {{IN_SCOPE_SUMMARY}} |
 | Out of scope | {{OUT_OF_SCOPE_SUMMARY}} |

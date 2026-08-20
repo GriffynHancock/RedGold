@@ -28,6 +28,7 @@ result.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import sys
 from collections import Counter
@@ -64,6 +65,96 @@ def severity_rank(value: str) -> int:
     return regen_status.severity_rank(value)
 
 
+# --------------------------------------------------------------------------------------------
+# Report freshness (RG-1 §8.6). A deliverable may not predate its own inputs.
+#
+# The prior engagement's only client deliverable was written at 20:38 and said "No confirmed
+# findings" and "No assets were confirmed"; `findings/baseline.json` was written at 01:20 the
+# following morning with eleven findings including a critical, and `assets/register.jsonl` at
+# 01:11 with six confirmed assets. Nothing detected the ordering. Every other control in RG-1 is
+# irrelevant to a client who receives that file, so this one is cheap and goes first.
+# --------------------------------------------------------------------------------------------
+
+REPORT_STALE = "REPORT_STALE"
+
+
+def parse_created(value) -> "_dt.datetime | None":
+    """A record's `created` stamp as an aware datetime, or None if it cannot be read.
+
+    None is not "old" and not "new" -- it is "unknown", and the caller treats unknown as stale.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed
+
+
+def corpus_freshness(records: list) -> tuple:
+    """(newest readable `created`, records seen, records whose `created` could not be read)."""
+    stamps = []
+    unreadable = 0
+    total = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        total += 1
+        parsed = parse_created(record.get("created"))
+        if parsed is None:
+            unreadable += 1
+        else:
+            stamps.append(parsed)
+    return (max(stamps) if stamps else None), total, unreadable
+
+
+def freshness_violation(root: Path, deliverable: Path) -> "str | None":
+    """The `REPORT_STALE` refusal reason, or None if the deliverable postdates its corpus.
+
+    **Fails closed in the direction that does not reduce what the client is told.** A deliverable
+    that cannot be *shown* to postdate the corpus is treated exactly like one that does not:
+    a missing file, and a corpus whose timestamps cannot be read, both refuse.
+    """
+    records = regen_status.all_findings(root)
+    newest, total, unreadable = corpus_freshness(records)
+
+    # "A deliverable that was never written" is checked FIRST, before the empty-corpus exemption.
+    # The exemption used to come first, so an engagement with zero finding records and one clean
+    # row in the coverage register cleared every refusal and closed with no client deliverable in
+    # existence -- while `close` printed "report-tier1.md postdates every finding" about a file
+    # that did not exist. That is a fabricated assurance emitted by the control whose whole
+    # purpose is to prevent fabricated assurance (adversarial review, S3).
+    #
+    # The rule has no exemption for engagements that found nothing. Those are precisely the
+    # engagements whose report is the entire product: "we tried to break this and could not" is
+    # the result the client paid for, and it does not exist until it is written down.
+    if not deliverable.is_file():
+        return (f"{REPORT_STALE}: {deliverable.name} does not exist. An engagement does not "
+                f"close on a deliverable that was never written ({total} finding record(s) on "
+                "disk). Run report.py.")
+    if total == 0:
+        # Nothing to predate. An engagement with no records at all is caught by the zero-zero
+        # rule (RG-1 §8.2) at phase completion, not here.
+        return None
+    if unreadable:
+        return (f"{REPORT_STALE}: {unreadable} of {total} finding record(s) carry no readable "
+                "`created` timestamp, so this deliverable cannot be shown to postdate them. "
+                "An unreadable timestamp is not evidence that the report is current.")
+
+    written = _dt.datetime.fromtimestamp(deliverable.stat().st_mtime, _dt.timezone.utc)
+    if written < newest:
+        return (f"{REPORT_STALE}: {deliverable.name} was written {written.isoformat()} but the "
+                f"newest of {total} finding record(s) was recorded {newest.isoformat()}. The "
+                "deliverable predates its own inputs and cannot describe them. Re-run report.py.")
+    return None
+
+
 def result_codes(record: dict, root: Path) -> list:
     return findings_mod.validate_record(record, root).blocking
 
@@ -74,24 +165,56 @@ def needs_verification(record: dict) -> bool:
     **Fails closed on an unrecognised or missing severity.** An unknown severity is not evidence
     that a finding is low-severity; it is evidence that we do not know, and a report is the last
     place to resolve an ambiguity in the flattering direction.
+
+    **Keys on the pre-cap severity** (`findings.gating_severity`), for the reason set out there:
+    the environment cap's job is to lower a severity, and a severity transform must never be able
+    to make a `status`/`verified` gate unreachable. Capping to `low` -- which `ephemeral-preview`
+    does unconditionally -- silenced this gate entirely, and walked a SPECULATED, never-verified
+    `critical` into the client body (adversarial review, S2).
     """
     if str(record.get("finding_class", "technical")).lower() != "technical":
         return False
-    severity = str(record.get("severity", "")).lower()
-    if severity not in findings_mod.SEVERITIES:
+    if str(record.get("severity", "")).lower() not in findings_mod.SEVERITIES:
         return True
-    return severity in findings_mod.ABOVE_LOW
+    return findings_mod.gating_severity(record) in findings_mod.ABOVE_LOW
 
 
 def is_rollup(record: dict, rollup_ids: set[str]) -> bool:
     return str(record.get("id")) in rollup_ids
 
 
-def classify(records: list[dict], root: Path) -> dict[str, list[dict]]:
+def engagement_environment(root: Path) -> str:
+    """The declared environment, resolved fail-closed to `production`.
+
+    A scope that cannot be read is not evidence that the engagement was non-production, so an
+    unreadable boundary caps nothing. The refusal for an undeclared environment lives at Gate 1
+    (`gate_cli.cmd_approve`), where it can be acted on; a report that silently capped every
+    severity because it could not read scope.yaml would be the flattering failure.
+    """
+    try:
+        return scope_mod.effective_environment(scope_mod.load(root / "scope.yaml").environment)
+    except scope_mod.ScopeError:
+        return "production"
+
+
+def classify(records: list[dict], root: Path,
+             environment: "str | None" = None) -> dict[str, list[dict]]:
     """Split findings into what may be reported, what may not, and why.
 
     Returns keys: body, unverified, absent, invalid, rollup_constituents.
+
+    The environment cap (RG-1 §6) is applied here, on copies, before anything is bucketed. This
+    is the assembly-time half of the cap: `baseline_scan` caps its own output at write time, but
+    every agent-written record reaches a client through this function and nowhere else. Order
+    matters and is part of the specification -- the cap runs *before* the §10.3 verification gate
+    below, and that gate reads `severity` rather than any pre-cap value, so a record scored
+    critical and capped to medium in development is gated on what the client would actually be
+    told.
     """
+    if environment is None:
+        environment = engagement_environment(root)
+    records = findings_mod.apply_environment_cap_to_corpus(records, environment)
+
     corpus_violations = findings_mod.validate_corpus(records)
     rollup_of: dict[str, list[str]] = {}
     for violation in corpus_violations:
@@ -104,6 +227,7 @@ def classify(records: list[dict], root: Path) -> dict[str, list[dict]]:
 
     buckets: dict[str, list[dict]] = {
         "body": [], "unverified": [], "absent": [], "invalid": [], "rollup_constituents": [],
+        "not_applicable": [], "environment_discrepancy": [],
     }
 
     for record in records:
@@ -111,6 +235,12 @@ def classify(records: list[dict], root: Path) -> dict[str, list[dict]]:
             continue
         if record.get("result") == "absent":
             buckets["absent"].append(record)
+            continue
+        # A check that could not be performed is neither a finding nor a clean result. It is a
+        # named gap, and it gets its own section rather than being folded in with the checks that
+        # actually ran -- the coverage claim has to distinguish the two.
+        if record.get("result") == "not_applicable":
+            buckets["not_applicable"].append(record)
             continue
 
         # Any blocking defect that is not purely about verification means the record cannot be
@@ -122,6 +252,13 @@ def classify(records: list[dict], root: Path) -> dict[str, list[dict]]:
         # That is the project's own recurring failure: a downstream consumer trusting an upstream
         # hook to have already rejected bad input, instead of enforcing the guarantee itself.
         blocking_codes = {v.code for v in result_codes(record, root)}
+        # RG-1 §4.2's action clause, and the reason this check is sited here rather than at Gate
+        # 1: the affected findings do not enter the report body until the discrepancy is resolved
+        # by a recorded operator decision naming which side was wrong. Checked before the general
+        # malformed-record branch so the client-facing reason is the specific one.
+        if "ENVIRONMENT_DISCREPANCY" in blocking_codes:
+            buckets["environment_discrepancy"].append(record)
+            continue
         if blocking_codes - VERIFICATION_CODES:
             buckets["invalid"].append(record)
             continue
@@ -152,7 +289,8 @@ def render(root: Path, tier: int) -> str:
     candidates = regen_status.read_jsonl(root / "assets" / "candidates.jsonl")
     cleanup = regen_status.read_jsonl(root / "ledger" / "cleanup.jsonl")
     records = regen_status.all_findings(root)
-    buckets = classify(records, root)
+    environment = scope_mod.effective_environment(boundary.environment)
+    buckets = classify(records, root, environment)
 
     out: list[str] = []
     add = out.append
@@ -163,6 +301,18 @@ def render(root: Path, tier: int) -> str:
     add(f"Authorised by {boundary.authorization.signed_by} on "
         f"{boundary.authorization.signed_date}; tested between "
         f"{boundary.authorization.window_start} and {boundary.authorization.window_end}.")
+    add("")
+
+    # The corpus this document was generated from, stated in the document (RG-1 §8.6). A staleness
+    # check that only a script can see is a staleness check nobody runs; a client, or the operator
+    # re-reading the file a week later, can compare these two numbers against `findings/`.
+    newest_created, corpus_total, corpus_unreadable = corpus_freshness(records)
+    add(f"Generated from {corpus_total} finding record(s); the newest was recorded "
+        f"{newest_created.isoformat() if newest_created else 'at no readable timestamp'}.")
+    if corpus_unreadable:
+        add(f"{corpus_unreadable} of those record(s) carry no readable `created` timestamp, so "
+            "this document cannot be shown to postdate them.")
+    add("Any record newer than that timestamp is not described here, and this document is stale.")
     add("")
 
     # --- summary ---------------------------------------------------------------------------
@@ -194,6 +344,15 @@ def render(root: Path, tier: int) -> str:
                 f"**Status:** {record.get('status')}  |  "
                 f"**Independently verified:** {record.get('verified')}")
             add("")
+            # RG-1 §6.4: recorded, never silently applied. The required sentence is the
+            # derivation one -- it says where we looked, never that the client is safe.
+            derivation = record.get("severity_derivation") or {}
+            if derivation.get("env_cap_applied"):
+                add(f"**Why this severity.** Rated {record.get('severity')} because it was "
+                    f"observed in a {derivation.get('environment_at_test')} environment. The "
+                    f"same issue in your production system would be rated "
+                    f"{derivation.get('before_env_cap')}.")
+                add("")
             if record.get("real_world_impact"):
                 add(f"**What it means for you.** {record['real_world_impact']}")
                 add("")
@@ -245,6 +404,46 @@ def render(root: Path, tier: int) -> str:
             add(f"- {record.get('title')}")
         add("")
 
+    # Two reasons a check did not run, and they say opposite things to a client (RG-1 §4.1). A
+    # service nobody could probe is an unassessed service; a check that is meaningless against
+    # this origin is not a gap at all. Printing them in one list would either manufacture a hole
+    # the assessment does not have, or bury a real one among structural non-events.
+    unassessed: dict[str, int] = {}
+    inapplicable: dict[str, int] = {}
+    for record in buckets["not_applicable"]:
+        # The collapsed record stands for every check it names (RG-1 §4.1b), so the count is
+        # `checks_skipped`, not one per record. One definition, shared with `regen_status.py` --
+        # the two used to count this by opposite rules and could disagree by twelve on the same
+        # corpus (adversarial review, S8).
+        count = regen_status.coverage_gap_size(record)
+        target = (inapplicable
+                  if record.get("not_applicable_reason") in regen_status.INAPPLICABLE_REASONS
+                  else unassessed)
+        asset = str(record.get("asset"))
+        target[asset] = target.get(asset, 0) + count
+
+    if unassessed:
+        add("### What we could NOT check")
+        add("")
+        add("These checks did not run. They are listed because a service nobody probed is an")
+        add("unassessed service, not a clean one, and reporting it as clean would overstate the")
+        add("coverage of this assessment.")
+        add("")
+        for asset, count in sorted(unassessed.items()):
+            add(f"- **{asset}** -- {count} check(s) not performed; this service is unassessed.")
+        add("")
+
+    if inapplicable:
+        add("### Checks that do not apply here")
+        add("")
+        add("These checks were skipped because they have no meaning against the service in")
+        add("question -- not because they were missed. They are listed so that the count above")
+        add("is not read as covering them.")
+        add("")
+        for asset, count in sorted(inapplicable.items()):
+            add(f"- **{asset}** -- {count} check(s) not applicable to this service.")
+        add("")
+
     if buckets["unverified"]:
         add("### Open questions -- not confirmed, not dismissed")
         add("")
@@ -256,6 +455,20 @@ def render(root: Path, tier: int) -> str:
         for record in sorted(buckets["unverified"], key=lambda r: str(r.get("id"))):
             add(f"- **{record.get('title')}** ({record.get('severity')}) -- "
                 f"next step: re-test with {'source access' if boundary.mode == 'audit' else 'more time'}.")
+        add("")
+
+    if buckets["environment_discrepancy"]:
+        add("### Held back -- the environment we were told about and the one we saw disagree")
+        add("")
+        add(f"{len(buckets['environment_discrepancy'])} record(s) were observed on assets that")
+        add("emitted signals of a non-production environment while being declared production.")
+        add("They are held out of the findings above until that disagreement is resolved, because")
+        add("rating them either way would be a guess about which system you actually run:")
+        add("")
+        for record in sorted(buckets["environment_discrepancy"], key=lambda r: str(r.get("id"))):
+            kinds = ", ".join(sorted({str(s.get("kind")) for s
+                                      in findings_mod.blocking_env_signals(record)}))
+            add(f"- **{record.get('title')}** (`{record.get('asset')}`) -- observed: {kinds}.")
         add("")
 
     if buckets["invalid"]:
@@ -311,6 +524,16 @@ def render(root: Path, tier: int) -> str:
         add(f"- {len(candidates)} candidate asset(s) were left untested pending confirmation.")
     add("- A finding not listed here is a finding we did not make, which is not the same as a")
     add("  vulnerability that does not exist.")
+    if any((r.get("severity_derivation") or {}).get("env_cap_applied")
+           for r in buckets["body"] + buckets["unverified"]):
+        # Required wherever the severity model reduced a rating (RG-1 §11.2). A client who
+        # cannot see what was reduced cannot audit the reduction.
+        add(f"- Some severities above were **reduced** because the assets were tested in a "
+            f"`{environment}` environment rather than in production. Each one states its "
+            "original rating and the reason. Nothing was removed from this document by that "
+            "reduction: findings the model rated down are listed with their reasons rather than "
+            "dropped. The reduction is a statement about where we looked, not about whether the "
+            "issue matters.")
     add("")
 
     return "\n".join(out) + "\n"
@@ -321,16 +544,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--tier", type=int, default=1, choices=sorted(TIERS))
     parser.add_argument("--out", default=None)
+    parser.add_argument("--check", action="store_true",
+                        help="do not write; exit 1 if the deliverable on disk predates the "
+                             "newest finding record (RG-1 §8.6, REPORT_STALE)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).expanduser().resolve()
+    out_path = Path(args.out) if args.out else root / "deliverables" / f"report-tier{args.tier}.md"
+
+    if args.check:
+        violation = freshness_violation(root, out_path)
+        if violation:
+            print(f"REFUSED: {violation}", file=sys.stderr)
+            return 1
+        print(f"{out_path} postdates every finding record.")
+        return 0
+
     try:
         text = render(root, args.tier)
     except scope_mod.ScopeError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
 
-    out_path = Path(args.out) if args.out else root / "deliverables" / f"report-tier{args.tier}.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
     print(f"Wrote {out_path}")

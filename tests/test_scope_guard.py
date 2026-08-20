@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,17 +31,59 @@ GUARD = REPO / "scripts" / "scope_guard.py"
 PAYLOADS = REPO / "tests" / "fixtures" / "hook-payloads"
 ENGAGEMENT = REPO / "tests" / "fixtures" / "engagement"
 
+# The guard now appends a decision row to <root>/ledger/activity.jsonl (RG-2 §5). Running the
+# recorded payloads against the checked-in fixture directory would therefore write into the repo
+# on every test run, so every subprocess run is pointed at a throwaway copy instead. The payload's
+# `cwd` is rewritten rather than RG_ENGAGEMENT_ROOT being set, so find_engagement_root's directory
+# walk stays exercised -- it is part of what these tests cover.
+_SHARED: tempfile.TemporaryDirectory | None = None
+_SHARED_ROOT: Path | None = None
 
-def run_guard(payload_name: str) -> tuple[int, dict | None]:
-    """Run the hook exactly as Claude Code would: JSON on stdin, decision on stdout."""
-    raw = (PAYLOADS / f"{payload_name}.json").read_text(encoding="utf-8")
-    proc = subprocess.run(
+
+def setUpModule() -> None:
+    global _SHARED, _SHARED_ROOT
+    _SHARED = tempfile.TemporaryDirectory()
+    _SHARED_ROOT = engagement_copy(Path(_SHARED.name))
+
+
+def tearDownModule() -> None:
+    if _SHARED is not None:
+        _SHARED.cleanup()
+
+
+def engagement_copy(parent: Path) -> Path:
+    dst = parent / "engagement"
+    shutil.copytree(ENGAGEMENT, dst)
+    return dst
+
+
+def payload_for(payload_name: str, root: Path) -> str:
+    payload = json.loads((PAYLOADS / f"{payload_name}.json").read_text(encoding="utf-8"))
+    payload["cwd"] = str(root)
+    return json.dumps(payload)
+
+
+def run_guard_at(root: Path, payload_name: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [sys.executable, str(GUARD)],
-        input=raw,
+        input=payload_for(payload_name, root),
         capture_output=True,
         text=True,
         timeout=30,
     )
+
+
+def read_activity(root: Path) -> list[dict]:
+    path = root / "ledger" / "activity.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def run_guard(payload_name: str) -> tuple[int, dict | None]:
+    """Run the hook exactly as Claude Code would: JSON on stdin, decision on stdout."""
+    assert _SHARED_ROOT is not None
+    proc = run_guard_at(_SHARED_ROOT, payload_name)
     out = proc.stdout.strip()
     return proc.returncode, (json.loads(out) if out else None)
 
@@ -386,6 +430,285 @@ class TestTestingWindow(unittest.TestCase):
     def test_unknown_timezone_raises(self):
         with self.assertRaises(scope_guard.ScopeWindowError):
             scope_guard.within_testing_window("weekdays 09:00-17:00 XYZ", self._utc("2026-08-05T01:00"))
+
+
+RESOLUTION_ROWS = [
+    {"host": "app.example.invalid", "ips": ["203.0.113.10", "203.0.113.11"],
+     "ts": "2026-08-20T09:00:00Z", "ttl": 300, "resolver": "control-tier"},
+    {"host": "marketing.example.invalid", "ips": ["198.51.100.7"],
+     "ts": "2026-08-20T09:00:00Z", "ttl": 300, "resolver": "control-tier"},
+]
+
+
+class TestDecisionLogging(unittest.TestCase):
+    """RG-2 §5 -- the guard must leave a reconcilable record of every decision.
+
+    Until this existed, `status.md` and the README claimed out-of-scope targets were "refused by
+    tooling and logged". The second half was false: no ledger row was written on allow or on deny.
+    These tests are what make the claim true.
+
+    The two constraints §5.2 names are load-bearing and each has a test below:
+      1. logging an allow must not *become* an allow decision (that would auto-approve the call
+         and suppress the operator's permission prompt);
+      2. a ledger write failure must not fail the tool call.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = engagement_copy(Path(self.tmp.name))
+
+    def write_resolution(self, rows=None) -> None:
+        ledger = self.root / "ledger"
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "resolution.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in (RESOLUTION_ROWS if rows is None else rows)),
+            encoding="utf-8",
+        )
+
+    def guard(self, payload_name: str) -> subprocess.CompletedProcess:
+        return run_guard_at(self.root, payload_name)
+
+    def rows(self) -> list[dict]:
+        return read_activity(self.root)
+
+    # -- the envelope -------------------------------------------------------------------------
+
+    def test_allow_writes_a_scope_allow_row(self):
+        proc = self.guard("allow-in-scope-get")
+        self.assertEqual(proc.returncode, 0)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1, "an allowed network call must leave exactly one row")
+        row = rows[0]
+        self.assertEqual(row["event_type"], "scope.allow")
+        self.assertEqual(row["decision"], "allow")
+        self.assertEqual(row["severity"], "info")
+        self.assertEqual(row["engagement_id"], "guard-test")
+        self.assertEqual(row["target"]["host"], "app.example.invalid")
+        self.assertEqual(row["target"]["port"], 443)
+        self.assertEqual(row["target"]["asset_id"], "A-001")
+        self.assertTrue(row["target"]["operation"].startswith("Bash: curl"))
+        self.assertEqual(row["actor"]["session"], "test")
+        self.assertEqual(row["tier"], 1)
+        self.assertTrue(row["ts"].endswith("Z"))
+
+    def test_allow_row_is_not_an_allow_decision(self):
+        # §5.2.1. The whole feature is worse than nothing if logging the allow also *emits* one:
+        # an explicit permissionDecision would auto-approve the call and suppress the operator's
+        # prompt, turning a logging change into silent privilege escalation.
+        proc = self.guard("allow-in-scope-get")
+        self.assertEqual(proc.stdout.strip(), "", "an allowed call must still produce no stdout")
+        self.assertNotIn("permissionDecision", proc.stdout)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_emit_stays_silent_on_allow(self):
+        # Same rule at the unit level, so a future edit to emit() cannot reintroduce it.
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scope_guard.emit(scope_guard.Decision.permit())
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_deny_writes_a_scope_deny_row(self):
+        proc = self.guard("deny-out-of-scope-host")
+        row = self.rows()[0]
+        self.assertEqual(row["event_type"], "scope.deny")
+        self.assertEqual(row["decision"], "deny")
+        self.assertEqual(row["severity"], "high")
+        self.assertIn("out of scope", row["reason"].lower())
+        emitted = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual(row["reason"], emitted, "the logged reason must be the emitted reason")
+
+    def test_undeterminable_is_its_own_event_type(self):
+        # §5.1: folding it into scope.deny hides the single best metric for a degrading parser.
+        self.guard("deny-undeterminable-variable")
+        row = self.rows()[0]
+        self.assertEqual(row["event_type"], "scope.undeterminable")
+        self.assertEqual(row["decision"], "deny")
+
+    def test_undeterminable_prefix_constant_tracks_the_emitted_reason(self):
+        # The event_type split is derived from the reason prefix evaluate() writes. If someone
+        # reworded that string, undeterminable denials would silently be logged as scope.deny.
+        proc = self.guard("deny-undeterminable-inline")
+        emitted = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertTrue(emitted.startswith(scope_guard.UNDETERMINABLE_PREFIX))
+
+    def test_every_row_carries_the_common_envelope_fields(self):
+        self.write_resolution()
+        self.guard("allow-in-scope-get")
+        self.guard("deny-out-of-scope-host")
+        self.assertEqual(len(self.rows()), 2)
+        for row in self.rows():
+            for field in ("ts", "engagement_id", "event_type", "actor", "target", "decision",
+                          "reason", "tier", "gate_ref", "scope_hash", "ruleset_hash", "corr_id",
+                          "severity"):
+                self.assertIn(field, row)
+            for field in ("asset_id", "host", "port", "resolved_ips", "operation"):
+                self.assertIn(field, row["target"])
+
+    def test_scope_hash_matches_the_scope_file(self):
+        import hashlib
+        self.guard("allow-in-scope-get")
+        digest = hashlib.sha256((self.root / "scope.yaml").read_bytes()).hexdigest()
+        self.assertEqual(self.rows()[0]["scope_hash"], "sha256:" + digest)
+
+    def test_corr_id_is_a_ulid_and_unique_per_decision(self):
+        self.guard("allow-in-scope-get")
+        self.guard("allow-in-scope-get")
+        ids = [r["corr_id"] for r in self.rows()]
+        self.assertEqual(len(ids), 2)
+        self.assertNotEqual(ids[0], ids[1])
+        for value in ids:
+            self.assertEqual(len(value), 26)
+            self.assertTrue(set(value) <= set("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), value)
+        self.assertLessEqual(ids[0], ids[1], "ULIDs are time-ordered")
+
+    def test_rows_append_rather_than_truncate(self):
+        for _ in range(3):
+            self.guard("deny-out-of-scope-host")
+        self.assertEqual(len(self.rows()), 3)
+
+    # -- resolved_ips (ADDITION 1) -------------------------------------------------------------
+
+    def test_resolved_ips_are_stamped_from_the_resolution_ledger(self):
+        self.write_resolution()
+        self.guard("allow-in-scope-get")
+        row = self.rows()[0]
+        self.assertEqual(row["target"]["resolved_ips"], ["203.0.113.10", "203.0.113.11"])
+        self.assertIsNone(row.get("reason_code"))
+
+    def test_a_host_with_no_resolution_record_is_unresolved_not_guessed(self):
+        self.write_resolution(rows=[])
+        self.guard("allow-in-scope-get")
+        row = self.rows()[0]
+        self.assertEqual(row["target"]["resolved_ips"], [])
+        self.assertEqual(row["reason_code"], "unresolved")
+
+    def test_missing_resolution_ledger_is_unresolved_not_an_error(self):
+        self.guard("allow-in-scope-get")
+        row = self.rows()[0]
+        self.assertEqual(row["target"]["resolved_ips"], [])
+        self.assertEqual(row["reason_code"], "unresolved")
+
+    def test_the_guard_never_resolves_a_host_itself(self):
+        # §5.1: an in-guest lookup is both a side effect and something a poisoned resolver can
+        # steer. resolved_ips comes from the control tier's record or it is empty. This is a
+        # source-level assertion because the property is "no code path can do it", not "this one
+        # did not".
+        source = (REPO / "scripts" / "scope_guard.py").read_text(encoding="utf-8")
+        for forbidden in ("getaddrinfo", "gethostbyname", "import socket", "dns.resolver"):
+            self.assertNotIn(forbidden, source,
+                             f"{forbidden!r} in scope_guard.py means the guard can resolve in-guest")
+
+    # -- attribution probes (§5.3) --------------------------------------------------------------
+
+    def test_attribution_probe_is_visible_in_the_ledger(self):
+        # staging.example.invalid is a CANDIDATE inside the boundary; a tier-1 GET rides the §5.5
+        # carve-out. The rate limit and evidence-discard halves are still unenforced, but the
+        # carve-out is no longer invisible outside a code comment.
+        self.guard("deny-not-confirmed")
+        row = self.rows()[0]
+        self.assertEqual(row["decision"], "allow")
+        self.assertEqual(row["purpose"], "attribution")
+        self.assertEqual(row["reason_code"], "attribution_probe")
+        # §5.1 and §5.3 both claim `reason_code`, and they collide precisely here: an unconfirmed
+        # host is the one least likely to have a resolution record. The join-integrity signal must
+        # survive the collision, so it also lives in target.resolution.
+        self.assertEqual(row["target"]["resolution"], "unresolved")
+        self.assertEqual(row["target"]["resolved_ips"], [])
+
+    def test_a_second_host_in_the_same_command_is_not_dropped(self):
+        # §5.1's envelope assumes one destination per decision; one command can name several, and
+        # a dropped host is a gateway row this side cannot be joined to.
+        self.write_resolution()
+        payload = {
+            "session_id": "test", "cwd": str(self.root), "tool_name": "Bash",
+            "tool_input": {"command": "curl -s https://api.example.invalid/a "
+                                      "https://app.example.invalid/b"},
+        }
+        subprocess.run([sys.executable, str(GUARD)], input=json.dumps(payload),
+                       capture_output=True, text=True, timeout=30)
+        row = self.rows()[0]
+        self.assertEqual(row["target"]["host"], "api.example.invalid")
+        self.assertEqual(row["target"]["additional_hosts"], ["app.example.invalid:443"])
+        # api.* has no resolution record, app.* does: a partial stamp, not a silent full one.
+        self.assertEqual(row["target"]["resolution"], "partial")
+        self.assertEqual(row["target"]["resolved_ips"], ["203.0.113.10", "203.0.113.11"])
+
+    def test_ordinary_confirmed_traffic_is_not_marked_as_attribution(self):
+        self.guard("allow-in-scope-get")
+        self.assertIsNone(self.rows()[0].get("purpose"))
+
+    # -- what is deliberately not logged --------------------------------------------------------
+
+    def test_non_network_allow_writes_no_row(self):
+        # `ls -la ./findings` reaches no destination. A row with no join key is noise in a log
+        # whose only purpose is joining against the gateway's.
+        self.guard("allow-non-network")
+        self.assertEqual(self.rows(), [])
+
+    # -- check_url, the sanctioned burst path (§5.2.4) -------------------------------------------
+
+    def test_check_url_logs_its_decision(self):
+        proc = subprocess.run(
+            [sys.executable, str(GUARD), "--check-url", "https://app.example.invalid/x",
+             "--root", str(self.root)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0)
+        row = self.rows()[0]
+        self.assertEqual(row["event_type"], "scope.allow")
+        self.assertTrue(row["target"]["operation"].startswith("check_url:"))
+
+    def test_check_url_denial_logs_too(self):
+        proc = subprocess.run(
+            [sys.executable, str(GUARD), "--check-url", "https://evil.example.com/x",
+             "--root", str(self.root)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self.rows()[0]["event_type"], "scope.deny")
+
+    # -- failure must not fail the tool call (§5.2.2) --------------------------------------------
+
+    def _break_the_ledger(self) -> None:
+        # A file where the directory must be: mkdir fails, and it fails the same way for root.
+        (self.root / "ledger").write_text("not a directory\n", encoding="utf-8")
+
+    def test_ledger_write_failure_does_not_change_an_allow(self):
+        self._break_the_ledger()
+        proc = self.guard("allow-in-scope-get")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "", "a logging failure must not deny a legal call")
+        self.assertIn("ledger.write_fail", proc.stderr)
+
+    def test_ledger_write_failure_does_not_change_a_deny(self):
+        self._break_the_ledger()
+        proc = self.guard("deny-out-of-scope-host")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("out of scope", proc.stdout.lower())
+        self.assertIn("ledger.write_fail", proc.stderr)
+
+    def test_a_corrupt_resolution_ledger_does_not_fail_the_call(self):
+        ledger = self.root / "ledger"
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "resolution.jsonl").write_text("{not json\n[]\n", encoding="utf-8")
+        proc = self.guard("allow-in-scope-get")
+        self.assertEqual(proc.stdout.strip(), "")
+        self.assertEqual(self.rows()[0]["target"]["resolved_ips"], [])
+
+
+class TestNoDecisionIsAnAllow(unittest.TestCase):
+    """No payload, in any state, may make this hook grant permission."""
+
+    def test_no_payload_ever_emits_an_allow_decision(self):
+        for path in sorted(PAYLOADS.glob("*.json")):
+            with self.subTest(payload=path.stem):
+                _, result = run_guard(path.stem)
+                if result is not None:
+                    self.assertEqual(
+                        result["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class TestAuthorizationWindow(unittest.TestCase):

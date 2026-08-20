@@ -83,6 +83,35 @@ def severity_rank(value: str) -> int:
         return -1
 
 
+# --------------------------------------------------------------------------------------------
+# The coverage gap, counted once (RG-1 §4.1, §4.1b).
+#
+# Two reasons a check did not run, and they say opposite things to a client: a service nobody
+# could probe is an *unassessed service*; a check that is structurally meaningless against this
+# origin is not a gap at all. This file and `report.py` used to decide that by opposite rules and
+# could disagree by twelve on the same corpus, always in the flattering direction here. They now
+# share these two definitions, so there is one rule and no drift to keep in step.
+#
+# The allow-list is on the *inapplicable* side on purpose. An unrecognised reason has to fall
+# into the disclosing bucket: "we do not know why this check did not run" is a coverage gap, and
+# resolving it the other way is how a gap disappears by being misspelt.
+# --------------------------------------------------------------------------------------------
+
+INAPPLICABLE_REASONS = frozenset({"scheme_inapplicable"})
+
+
+def coverage_gap_size(record: dict) -> int:
+    """How many checks this record stands for. One collapsed record can stand for many (§4.1b).
+
+    `isinstance(True, int)` is True in Python, so the bool guard is not decoration: a JSON `true`
+    in `checks_skipped` is malformed input, not one check, and both readers must agree on that.
+    """
+    count = record.get("checks_skipped")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return 1
+    return count
+
+
 def render(root: Path) -> str:
     boundary = scope_mod.load(root / "scope.yaml")
     register = read_jsonl(root / "assets" / "register.jsonl")
@@ -155,15 +184,18 @@ def render(root: Path) -> str:
     if not records:
         add("None recorded.")
     else:
+        # "absent" was checked and was not there; "not_applicable" was never checked at all.
+        # Neither is a finding, and the second one must not be counted as one.
+        non_findings = {"absent", "not_applicable"}
         by_severity = Counter(str(r.get("severity", "unknown")).lower() for r in records
-                              if r.get("result") != "absent")
+                              if r.get("result") not in non_findings)
         add("| Severity | Count |")
         add("|---|---|")
         for level in reversed(findings_mod.SEVERITIES):
             if by_severity.get(level):
                 add(f"| {level} | {by_severity[level]} |")
         add("")
-        present = [r for r in records if r.get("result") != "absent"]
+        present = [r for r in records if r.get("result") not in non_findings]
         ordered = sorted(present, key=lambda r: (-severity_rank(r.get("severity", "")),
                                                  str(r.get("id"))))
         # Capped deliberately. A neighbouring project's orchestrator was instructed to read its
@@ -186,6 +218,26 @@ def render(root: Path) -> str:
             add("")
             add(f"Additionally {checked} checks ran and found nothing. Recorded deliberately: "
                 "a report that omits what it did not find overstates its own assurance.")
+        # One record can stand for many checks (RG-1 §4.1b), so the honest number is the sum of
+        # `checks_skipped`, never the record count. And a check that is structurally inapplicable
+        # here is not an unassessed service.
+        #
+        # The allow-list is on the *inapplicable* bucket, and everything else is a gap -- the
+        # disclosing direction, and the same rule `report.py` applies. This file used to
+        # allow-list the *gap* bucket instead, so any `not_applicable_reason` it did not
+        # recognise vanished: one typo, or one future third reason, and status.md -- the file
+        # CLAUDE.md calls authoritative and the operator reads at every session start -- reported
+        # zero unassessed services while the client report reported twelve. It failed open in the
+        # flattering direction, which is the drift this whole file exists to prevent
+        # (adversarial review, S8). One rule, imported, so the two cannot disagree again.
+        gaps = [r for r in records if r.get("result") == "not_applicable"
+                and r.get("not_applicable_reason") not in INAPPLICABLE_REASONS]
+        untested = sum(coverage_gap_size(r) for r in gaps)
+        if untested:
+            unassessed = sorted({str(r.get("asset")) for r in gaps})
+            add("")
+            add(f"{untested} checks did NOT run against {', '.join(unassessed)}. Those services "
+                "are unassessed, not clean.")
     add("")
 
     add("## Cleanup debt")

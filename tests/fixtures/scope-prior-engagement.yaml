@@ -20,6 +20,11 @@ authorization:
   window_end: 2026-08-03
 mode: audit
 ceiling: 2
+# The engagement this fixture is shaped after was a live client product, and its findings were
+# rated as such. It is `production` here because that is what it was -- the failure being modelled
+# elsewhere is that a *different*, development stack got tested and reported under this same
+# declaration, which is exactly what a per-asset environment and the discrepancy check exist for.
+environment: production
 crown_jewels:
   - "user geolocation and presence data"
   - "real-name profile identity imported from a professional network"

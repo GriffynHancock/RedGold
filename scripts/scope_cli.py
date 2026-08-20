@@ -221,8 +221,16 @@ def cmd_add_candidate(root: Path, args) -> int:
     register = read_jsonl(root / "assets" / "register.jsonl")
 
     identifier, port = normalise_identifier(args.identifier)
-    if any(r.get("identifier") == identifier for r in candidates + register):
-        raise ScopeCliError(f"{identifier} is already in the register or candidate queue")
+    # Identity is (host, port), not host -- see `normalise_identifier`. One hostname routinely
+    # carries several distinct in-scope services on different ports, each its own asset with its
+    # own boundary entry. Deduplicating on the host alone silently refuses the second one and
+    # destroys coverage downstream, because baseline_scan derives its targets from register rows.
+    if any(r.get("identifier") == identifier and r.get("port") == port
+           for r in candidates + register):
+        raise ScopeCliError(
+            f"{identifier} on port {port if port is not None else '(none)'} is already in the "
+            "register or candidate queue. A different port on the same host is a different asset "
+            "and can be added separately.")
 
     signals = []
     for raw in args.signal or []:
@@ -269,10 +277,25 @@ def cmd_promote(root: Path, args) -> int:
     register = read_jsonl(root / "assets" / "register.jsonl")
     identifier, typed_port = normalise_identifier(args.identifier)
 
-    match = next((r for r in candidates if r.get("identifier") == identifier), None)
-    if match is None:
+    on_host = [r for r in candidates if r.get("identifier") == identifier]
+    if typed_port is not None:
+        match = next((r for r in on_host if r.get("port") == typed_port), None)
+    elif len(on_host) > 1:
+        # The operator typed a bare host that carries several candidate services. Picking the
+        # first would promote an asset they did not name, so refuse and make them say which.
+        listed = ", ".join(str(r.get("port")) for r in on_host)
+        example = f"http://{identifier}:{on_host[0].get('port')}"
         raise ScopeCliError(
-            f"{identifier} is not in the candidate queue. Add it with 'add-candidate' first -- "
+            f"{identifier} has more than one candidate service on it (ports: {listed}). Name the "
+            f"port explicitly, e.g. 'promote {example}' -- promoting by host alone would confirm "
+            "an asset you did not name.")
+    else:
+        match = on_host[0] if on_host else None
+
+    if match is None:
+        where = f"{identifier}:{typed_port}" if typed_port is not None else identifier
+        raise ScopeCliError(
+            f"{where} is not in the candidate queue. Add it with 'add-candidate' first -- "
             "an asset cannot be promoted straight into the register."
         )
 
@@ -312,8 +335,7 @@ def cmd_promote(root: Path, args) -> int:
 
     register.append(match)
     write_jsonl(root / "assets" / "register.jsonl", register)
-    write_jsonl(root / "assets" / "candidates.jsonl",
-                [r for r in candidates if r.get("identifier") != identifier])
+    write_jsonl(root / "assets" / "candidates.jsonl", [r for r in candidates if r is not match])
     append_ledger(root, "activity.jsonl", {
         "ts": now(), "engagement_id": boundary.engagement_id, "event_type": "asset.promote",
         "target": {"asset_id": match["asset_id"], "host": identifier},

@@ -13,6 +13,9 @@ authorization:
   window_end: 2099-12-31
 mode: audit
 ceiling: 2
+# `production` on purpose: this fixture exercises scope_guard.py, and the uncapped column keeps
+# the environment cap from silently changing severities in tests that are about something else.
+environment: production
 crown_jewels:
   - "synthetic test data"
 in_scope:

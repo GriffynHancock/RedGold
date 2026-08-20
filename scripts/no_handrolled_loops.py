@@ -56,9 +56,29 @@ LOOP_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("find -exec fan-out", re.compile(r"\bfind\b[^|;]*-exec\b")),
     ("a shell function used as a loop", re.compile(r"\b\w+\s*\(\s*\)\s*\{")),
     ("a watch loop", re.compile(r"(?:^|[;&|]|\s)watch\b")),
-    ("a curl config file of URLs", re.compile(r"(?:^|\s)(?:-K|--config)\b")),
-    ("a wget input file", re.compile(r"(?:^|\s)(?:-i|--input-file)\b")),
-    ("recursive mirroring", re.compile(r"(?:^|\s)(?:-r|--recursive|-m|--mirror)\b")),
+]
+
+# Flags whose meaning depends entirely on which tool is being invoked, so they are matched only
+# when that tool is.
+#
+# `-i`, `-r` and `-m` are wget's input-file list, recursive mirror and mirror. They are also
+# curl's **show-headers**, **byte-range** and **max-time** -- three of the safest flags in the
+# product, none of which loops over anything. Matched tool-blind, this hook denied
+# `curl -i https://host/health`, close to the single most ordinary command an operator types,
+# and `curl -m 5`, which exists to make a request *shorter*.
+#
+# That is the disabled-gate failure (§2.3) arriving by the most predictable route: an operator
+# whose safe commands are refused stops trusting the hook and gets it switched off, and a
+# switched-off hook is every hand-rolled loop back again. Denying nothing would be better than
+# denying `curl -i`; scoping each flag to the tool whose flag it is denies the fan-out and
+# nothing else.
+TOOL_SCOPED_PATTERNS: list[tuple[str, re.Pattern[str], re.Pattern[str]]] = [
+    ("a wget input file", re.compile(r"\bwget\b"),
+     re.compile(r"(?:^|\s)(?:-i\b|--input-file\b)")),
+    ("recursive mirroring", re.compile(r"\bwget\b"),
+     re.compile(r"(?:^|\s)(?:-r|--recursive|-m|--mirror)\b")),
+    ("a curl config file of URLs", re.compile(r"\bcurl\b"),
+     re.compile(r"(?:^|\s)(?:-K|--config)\b")),
 ]
 
 # The sanctioned path. A command that IS the rate probe is allowed through -- it owns its own
@@ -94,9 +114,13 @@ def evaluate(command: str) -> tuple[bool, str]:
             "dispatched requests against a hard cap and logs its plan before firing."
         )
 
-    for description, pattern in LOOP_PATTERNS:
-        if pattern.search(command):
-            return False, (
+    description = next(
+        (d for d, pattern in LOOP_PATTERNS if pattern.search(command)),
+        next((d for d, tool, flag in TOOL_SCOPED_PATTERNS
+              if tool.search(command) and flag.search(command)), None),
+    )
+    if description is not None:
+        return False, (
                 f"DENIED (hand-rolled request loop): this command combines {description} with a "
                 "network request. On a prior engagement a hand-rolled loop authorised for 10 "
                 "requests sent 20, because it counted its own iterations rather than the "

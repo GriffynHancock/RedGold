@@ -36,7 +36,9 @@ failing tests outside the feature path. Pick a different lens each pass and name
 - *"Trust nothing — run it yourself."* Re-execute rather than reason.
 - *"Assume the auth check is bypassable."* Chase one named risk to exhaustion.
 - *"Assume the evidence was captured from the wrong context."* Attack the setup, not the claim.
-- *"Assume this is a secure default being sold as a flaw."* Check it against the false-positive table.
+- *"Assume this is a secure default being sold as a flaw."* Check it against the false-positive
+  table (`docs/specs/redgold/08-findings-and-verification.md` §10.5 — the spec's table, not
+  `playbooks/_generic/false-positives.md`, which is specced but not yet created on disk).
 
 ## Re-run broadly, not just the finding
 
