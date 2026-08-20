@@ -25,3 +25,16 @@ evidence/
 # Build noise
 __pycache__/
 *.pyc
+
+# Operator's own legal and commercial exposure analysis — NOT for a public repo.
+# These analyse the operator's liability (tort exposure, unqualified-practice risk, PI gaps) and
+# are [VERIFY]-marked throughout. A counterparty reads a published liability analysis as a
+# pre-built brief. They stay on disk, out of git. See REDGOLD-NEEDS-FROM-YOU.md.
+docs/research/privacy-act-feasibility.md
+docs/research/data-sovereignty.md
+docs/research/sovereignty-and-pre-ingestion-controls.md
+
+# Engagement pipeline is not framework state. Which client is next belongs in the operator's own
+# notes or in ~/engagements/, never in a public repo — naming a prospective target next to
+# "not yet authorised" is the worst thing that could go public here.
+docs/research/*-pipeline.md

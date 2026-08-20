@@ -145,7 +145,7 @@ claude plugin validate .
 Load it during development without publishing:
 
 ```sh
-claude --plugin-dir /home/hiranya/RedGold
+claude --plugin-dir ~/RedGold
 ```
 
 Scaffold a new engagement (operator-initiated; gathers authorization facts by asking, never by

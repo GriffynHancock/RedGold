@@ -14,7 +14,10 @@ the conclusions that still matter are in `status.md`, `CLAUDE.md`, and the spec.
 ## Where v1 landed (2026-08-04)
 
 Build order §17.2 steps 1–9 complete, plus `/rg:scope`, `/rg:gate` and `/rg:report`.
-406 tests (18 skipped), 21/21 fault injection, both exit 0. Pushed private.
+406 tests (18 skipped), 21/21 fault injection, both exit 0. Pushed to
+`github.com/GriffynHancock/RedGold`, which is a **public** repository — an earlier note here said
+"pushed private" and was wrong. Everything committed to this repo is world-readable; target
+identifiers and engagement detail must be anonymised before they land here.
 
 **Four adversarial audit rounds found 21 real defects the self-written suite missed** — including
 one that put an unverified finding into a client report, a shell injection in the scaffolder, and
@@ -29,7 +32,7 @@ behave in tests, which is not the same claim.
 
 ## Session 005 — not started
 
-**Objective: the opensesh engagement.** See `status.md` — the target is **not yet authorised in the
+**Objective: the next engagement.** See `status.md` — the target is **not yet authorised in the
 framework's terms**. The operator has stated approval exists; the scope facts, and the
 authorization document `/rg:new` requires on disk, do not. Ask for them first.
 
