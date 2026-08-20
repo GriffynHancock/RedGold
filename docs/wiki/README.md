@@ -177,6 +177,8 @@ automatically from date math, until a lint script exists to do that math consist
 |---|---|---|---|---|
 | `claude-code-hooks` | [Claude Code hooks reference](claude-code/hooks.md) | Claude Code | partial | 2026-08-20 |
 | `redgold-hooks-facts` | [RedGold-specific hook facts](claude-code/hooks-redgold-notes.md) | Claude Code / RedGold | verified | 2026-08-20 |
+| `claude-code-execution-model` | [Claude Code execution model](claude-code/execution-model.md) | Claude Code | partial | 2026-08-20 |
+| `redgold-execution-model-notes` | [What the execution model means for RedGold's controls](claude-code/execution-model-redgold-notes.md) | Claude Code / RedGold | partial | 2026-08-20 |
 
 ## 7. How an agent is directed here
 
