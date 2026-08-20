@@ -38,6 +38,9 @@ RedGold is three systems with different trust properties, and conflating them is
    trusted.
 
 ## Read first
+- `docs/wiki/redgold/facts.md` — **the findings that cost a session to learn, distilled to one
+  page.** Read before opening any research document; there are 15,000+ lines of them and the part
+  that matters is short. `docs/wiki/redgold/open-threads.md` says what is next.
 - `docs/REDGOLD-BRIEFING.md` — single-file condensation. Read this before the spec.
 - `docs/specs/redgold/README.md` — index of the 16-file spec. Load only the file whose question
   matches yours.
