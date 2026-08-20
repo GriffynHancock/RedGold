@@ -47,8 +47,27 @@ engagements/
 evidence/
 **/authorization/
 
-# Internal research, strategy, legal exposure, and the wiki. These contain
-# findings about our own controls, harness bypass techniques, commercial
-# analysis and legal exposure. None of it needs to be public, and some of it
-# is actively unhelpful to publish.
-docs/
+# Root files that are deliberately curated, not merely tracked by habit.
+!CLAUDE.md
+!status.md
+!session.md
+
+# Documentation: allow the spec and the briefing, withhold the rest.
+# NOTE: a parent-directory ignore cannot be selectively un-ignored, so these
+# are targeted rules rather than `docs/` plus negations.
+!docs/specs/**
+!docs/REDGOLD-BRIEFING.md
+
+# Findings about our own controls, a working harness hook-bypass technique,
+# commercial analysis, legal exposure. None of it needs to be public.
+docs/research/
+docs/wiki/
+
+# Superseded by status.md. A second stale copy of numbers that already went
+# stale once is a liability, not signal.
+docs/sessions/
+
+# Client-facing demo material. Predates every disclaimer added since; its
+# enforcement claims were never re-checked against the nine controls moved to
+# NOT enforced. Withheld pending review, not because it is unflattering.
+docs/demo/
